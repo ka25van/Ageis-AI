@@ -51,8 +51,8 @@ Create a production-ready development environment.
 
 #### Tasks
 
-* [ ] Initialize backend project
-* [ ] Initialize frontend project
+* [x] Initialize backend project
+* [x] Initialize frontend project
 * [ ] Configure Docker
 * [ ] Configure Docker Compose
 * [ ] Configure PostgreSQL
