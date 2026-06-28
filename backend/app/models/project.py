@@ -82,7 +82,7 @@ class RepositoryFile(Base):
     size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    metadata: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    file_metadata: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, nullable=False
     )

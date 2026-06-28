@@ -56,7 +56,7 @@ Create a production-ready development environment.
 * [x] Configure Docker
 * [x] Configure Docker Compose
 * [x] Configure PostgreSQL
-* [ ] Configure pgvector
+* [x] Configure pgvector
 * [ ] Configure Redis
 * [ ] Configure environment variables
 
