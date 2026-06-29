@@ -57,8 +57,8 @@ Create a production-ready development environment.
 * [x] Configure Docker Compose
 * [x] Configure PostgreSQL
 * [x] Configure pgvector
-* [ ] Configure Redis
-* [ ] Configure environment variables
+* [x] Configure Redis
+* [x] Configure environment variables
 
 Acceptance Criteria
 
