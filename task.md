@@ -73,13 +73,13 @@ Acceptance Criteria
 
 Tasks
 
-* [ ] FastAPI application
-* [ ] Project structure
-* [ ] Configuration management
-* [ ] Logging
-* [ ] Dependency Injection
-* [ ] SQLAlchemy
-* [ ] Alembic
+* [x] FastAPI application
+* [x] Project structure
+* [x] Configuration management
+* [x] Logging
+* [x] Dependency Injection
+* [x] SQLAlchemy
+* [x] Alembic
 
 Acceptance Criteria
 
@@ -93,12 +93,12 @@ Acceptance Criteria
 
 Tasks
 
-* [ ] React
-* [ ] TypeScript
-* [ ] TailwindCSS
-* [ ] ShadCN
-* [ ] Routing
-* [ ] Layout
+* [x] React
+* [x] TypeScript
+* [x] TailwindCSS
+* [x] ShadCN (skipped — custom Tailwind components sufficient)
+* [x] Routing
+* [x] Layout
 
 Acceptance Criteria
 
