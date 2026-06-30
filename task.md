@@ -113,12 +113,12 @@ Acceptance Criteria
 
 Tasks
 
-* [ ] User model
-* [ ] JWT Authentication
-* [ ] Login
-* [ ] Register
-* [ ] Refresh Token
-* [ ] Protected Routes
+* [x] User model
+* [x] JWT Authentication
+* [x] Login
+* [x] Register
+* [x] Refresh Token
+* [x] Protected Routes (get_current_user dependency)
 
 Acceptance Criteria
 
@@ -130,9 +130,9 @@ Acceptance Criteria
 
 Tasks
 
-* [ ] Projects
-* [ ] Project CRUD
-* [ ] User permissions
+* [x] Projects
+* [x] Project CRUD
+* [x] User permissions (owner-based)
 
 Acceptance Criteria
 
