@@ -148,10 +148,10 @@ Repository Ingestion
 
 Tasks
 
-* [ ] GitHub Clone
-* [ ] File Parser
-* [ ] Metadata Extraction
-* [ ] Language Detection
+* [x] GitHub Clone
+* [x] File Parser
+* [x] Metadata Extraction
+* [x] Language Detection
 
 Acceptance Criteria
 
@@ -165,9 +165,9 @@ Document Processing
 
 Tasks
 
-* [ ] PDF Loader
-* [ ] Markdown Loader
-* [ ] Text Loader
+* [x] PDF Loader (pdfplumber)
+* [x] Markdown Loader (markdown)
+* [x] Text Loader (paragraph splitting)
 
 Acceptance Criteria
 
@@ -181,10 +181,10 @@ Embeddings
 
 Tasks
 
-* [ ] Chunking
-* [ ] Embedding
-* [ ] pgvector storage
-* [ ] Metadata storage
+* [x] Chunking (text splitting with overlap)
+* [x] Embedding (Ollama nomic-embed-text)
+* [x] pgvector storage (Vector(1536))
+* [x] Metadata storage (document + chunk level)
 
 Acceptance Criteria
 

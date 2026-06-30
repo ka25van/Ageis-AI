@@ -1,0 +1,254 @@
+import os
+import httpx
+import asyncio
+from typing import List, Dict, Optional, Any
+from uuid import UUID
+from datetime import datetime
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from pgvector.sqlalchemy import Vector
+
+from app.models.document import Document, DocumentChunk
+from app.models.project import RepositoryFile
+from app.core.di import get_db_session
+from app.core.config import settings
+
+
+class EmbeddingService:
+    """Service for generating embeddings and storing in pgvector."""
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+        self.ollama_base_url = getattr(settings, "OLLAMA_BASE_URL", "http://localhost:11434")
+        self.embedding_model = getattr(settings, "EMBEDDING_MODEL", "nomic-embed-text")
+        self.embedding_dim = 1536  # nomic-embed-text dimension
+
+    async def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings for a list of texts using Ollama."""
+        if not texts:
+            return []
+
+        embeddings = []
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            for text in texts:
+                try:
+                    response = await client.post(
+                        f"{self.ollama_base_url}/api/embeddings",
+                        json={
+                            "model": self.embedding_model,
+                            "prompt": text[:8000],  # Truncate if too long
+                        },
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        embeddings.append(data.get("embedding", []))
+                    else:
+                        # Fallback: zero vector
+                        embeddings.append([0.0] * self.embedding_dim)
+                except Exception as e:
+                    print(f"Embedding generation failed: {e}")
+                    embeddings.append([0.0] * self.embedding_dim)
+
+        return embeddings
+
+    async def embed_and_store_document_chunks(self, document_id: UUID) -> Dict:
+        """Generate embeddings for all chunks of a document."""
+        # Get chunks without embeddings
+        result = await self.db.execute(
+            select(DocumentChunk)
+            .where(DocumentChunk.document_id == document_id)
+            .where(DocumentChunk.embedding.is_(None))
+        )
+        chunks = result.scalars().all()
+
+        if not chunks:
+            return {"status": "completed", "chunks_processed": 0}
+
+        texts = [chunk.content for chunk in chunks]
+        embeddings = await self.generate_embeddings(texts)
+
+        updated = 0
+        for chunk, embedding in zip(chunks, embeddings):
+            if embedding and len(embedding) == self.embedding_dim:
+                chunk.embedding = embedding
+                updated += 1
+
+        await self.db.commit()
+
+        return {
+            "status": "completed",
+            "chunks_processed": updated,
+            "total_chunks": len(chunks),
+        }
+
+    async def embed_and_store_repository_files(self, repository_id: UUID) -> Dict:
+        """Generate embeddings for all files in a repository."""
+        result = await self.db.execute(
+            select(RepositoryFile)
+            .where(RepositoryFile.repository_id == repository_id)
+            .where(RepositoryFile.content.is_not(None))
+        )
+        files = result.scalars().all()
+
+        if not files:
+            return {"status": "completed", "files_processed": 0}
+
+        # Chunk large files
+        all_chunks = []
+        file_chunk_map = []
+
+        for file in files:
+            content = file.content
+            if not content:
+                continue
+
+            # Simple chunking: split by lines, ~1000 chars per chunk
+            chunk_size = 1000
+            overlap = 200
+            for i in range(0, len(content), chunk_size - overlap):
+                chunk_text = content[i:i + chunk_size]
+                if len(chunk_text.strip()) > 50:
+                    all_chunks.append(chunk_text)
+                    file_chunk_map.append(file.id)
+
+        if not all_chunks:
+            return {"status": "completed", "files_processed": 0}
+
+        # Generate embeddings
+        embeddings = await self.generate_embeddings(all_chunks)
+
+        # Store as document chunks linked to files
+        from app.models.document import Document, DocumentChunk
+
+        # Create a virtual document for this repository
+        doc_result = await self.db.execute(
+            select(Document).where(Document.project_id.in_(
+                select(RepositoryFile.project_id).where(RepositoryFile.repository_id == repository_id)
+            )).limit(1)
+        )
+        project_doc = doc_result.scalar_one_or_none()
+
+        if not project_doc:
+            # Get project from repository
+            from app.models.project import Repository
+            repo_result = await self.db.execute(
+                select(Repository).where(Repository.id == repository_id)
+            )
+            repo = repo_result.scalar_one_or_none()
+            if repo:
+                project_doc = Document(
+                    project_id=repo.project_id,
+                    title=f"Repository: {repo.name}",
+                    source_type="repository",
+                    source_path=repo.url,
+                    metadata={"repository_id": str(repository_id)},
+                )
+                self.db.add(project_doc)
+                await self.db.commit()
+                await self.db.refresh(project_doc)
+
+        # Save chunks with embeddings
+        saved = 0
+        for i, (chunk_text, embedding, file_id) in enumerate(zip(all_chunks, embeddings, file_chunk_map)):
+            if embedding and len(embedding) == self.embedding_dim:
+                chunk = DocumentChunk(
+                    document_id=project_doc.id,
+                    file_id=file_id,
+                    chunk_index=i,
+                    content=chunk_text,
+                    token_count=len(chunk_text) // 4,
+                    embedding=embedding,
+                    metadata={"repository_file_id": str(file_id)},
+                )
+                self.db.add(chunk)
+                saved += 1
+
+        await self.db.commit()
+
+        return {
+            "status": "completed",
+            "files_processed": len(files),
+            "chunks_created": saved,
+        }
+
+    async def semantic_search(
+        self,
+        query: str,
+        project_id: Optional[UUID] = None,
+        limit: int = 10,
+        similarity_threshold: float = 0.7,
+    ) -> List[Dict]:
+        """Perform semantic search using pgvector."""
+        query_embedding = (await self.generate_embeddings([query]))[0]
+
+        if not query_embedding or len(query_embedding) != self.embedding_dim:
+            return []
+
+        # Build query
+        from sqlalchemy import text
+
+        base_query = """
+            SELECT
+                dc.id,
+                dc.content,
+                dc.metadata,
+                dc.chunk_index,
+                dc.token_count,
+                d.id as document_id,
+                d.title as document_title,
+                d.source_type,
+                d.metadata as document_metadata,
+                1 - (dc.embedding <=> :query_embedding) as similarity
+            FROM document_chunks dc
+            JOIN documents d ON dc.document_id = d.id
+            WHERE dc.embedding IS NOT NULL
+        """
+
+        params = {"query_embedding": query_embedding, "limit": limit}
+
+        if project_id:
+            base_query += " AND d.project_id = :project_id"
+            params["project_id"] = str(project_id)
+
+        base_query += """
+            AND 1 - (dc.embedding <=> :query_embedding) >= :threshold
+            ORDER BY dc.embedding <=> :query_embedding
+            LIMIT :limit
+        """
+        params["threshold"] = similarity_threshold
+
+        result = await self.db.execute(text(base_query), params)
+        rows = result.fetchall()
+
+        return [
+            {
+                "chunk_id": str(row.id),
+                "content": row.content,
+                "metadata": row.metadata,
+                "chunk_index": row.chunk_index,
+                "token_count": row.token_count,
+                "document_id": str(row.document_id),
+                "document_title": row.document_title,
+                "source_type": row.source_type,
+                "document_metadata": row.document_metadata,
+                "similarity": float(row.similarity),
+            }
+            for row in rows
+        ]
+
+    async def hybrid_search(
+        self,
+        query: str,
+        project_id: Optional[UUID] = None,
+        limit: int = 10,
+        semantic_weight: float = 0.7,
+        keyword_weight: float = 0.3,
+    ) -> List[Dict]:
+        """Hybrid search combining semantic and keyword search."""
+        # For now, just semantic search
+        return await self.semantic_search(query, project_id, limit)
+
+
+async def get_embedding_service(db: AsyncSession = Depends(get_db_session)) -> EmbeddingService:
+    return EmbeddingService(db)

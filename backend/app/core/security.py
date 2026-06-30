@@ -4,10 +4,12 @@ from uuid import UUID
 
 from jose import jwt
 from passlib.context import CryptContext
+from passlib.hash import argon2
 
 from app.core.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Use argon2 (more modern, no bcrypt compatibility issues)
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
