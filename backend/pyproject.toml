@@ -23,6 +23,9 @@ dependencies = [
     "structlog>=24.1.0",
     "pdfplumber>=0.11.0",
     "markdown>=3.6.0",
+    "langgraph>=0.2.0",
+    "langchain>=0.3.0",
+    "langchain-core>=0.3.0",
 ]
 
 [project.optional-dependencies]
