@@ -1,11 +1,12 @@
 from typing import Dict, List, Optional, Any
 from uuid import UUID
 
+from fastapi import Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.project import Repository, RepositoryFile
-from app.services.repository_analysis import RepositoryAnalyzer
+from app.services.repository_analysis import RepositoryAnalyzer, get_repository_analyzer
 from app.core.di import get_db_session
 
 

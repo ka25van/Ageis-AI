@@ -29,8 +29,8 @@ class User(Base):
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
-    projects = relationship("Project", back_populates="owner", lazy="selectin")
-    api_keys = relationship("APIKey", back_populates="user", lazy="selectin")
+    projects = relationship("Project", back_populates="owner", lazy="raise")
+    api_keys = relationship("APIKey", back_populates="user", lazy="raise")
 
 
 class APIKey(Base):
@@ -53,4 +53,4 @@ class APIKey(Base):
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
-    user = relationship("User", back_populates="api_keys")
+    user = relationship("User", back_populates="api_keys", lazy="raise")

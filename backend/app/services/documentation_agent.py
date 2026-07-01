@@ -2,6 +2,7 @@ from typing import Dict, List, Optional, Any
 from uuid import UUID
 from datetime import datetime
 
+from fastapi import Depends
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 

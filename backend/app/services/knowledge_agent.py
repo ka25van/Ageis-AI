@@ -1,11 +1,12 @@
 from typing import Dict, List, Optional, Any
 from uuid import UUID
 
+from fastapi import Depends
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document, DocumentChunk
-from app.services.embeddings import EmbeddingService
+from app.services.embeddings import EmbeddingService, get_embedding_service
 from app.core.di import get_db_session
 
 

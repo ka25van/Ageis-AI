@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.project import Repository, RepositoryFile
 from app.core.di import get_db_session
+from app.db.session import async_session_maker
 
 
 class RepositoryIngestionService:
@@ -174,10 +175,46 @@ class RepositoryIngestionService:
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise
 
+    def is_binary_file(self, file_path: str) -> bool:
+        """Check if file is binary by reading first 8KB."""
+        try:
+            with open(file_path, "rb") as f:
+                chunk = f.read(8192)
+                if b"\x00" in chunk:
+                    return True
+                # Check for high ratio of non-text bytes
+                text_chars = bytearray({7, 8, 9, 10, 12, 13, 27} | set(range(0x20, 0x7f)))
+                if chunk:
+                    non_text = sum(1 for b in chunk if b not in text_chars)
+                    if non_text / len(chunk) > 0.3:
+                        return True
+        except Exception:
+            return True
+        return False
+
     def extract_file_metadata(self, repo_path: str, file_path: str) -> Dict:
         """Extract metadata from a single file."""
         full_path = os.path.join(repo_path, file_path)
         stat = os.stat(full_path)
+
+        # Skip binary files - don't read content
+        if self.is_binary_file(full_path):
+            language = self.detect_language(file_path)
+            import hashlib
+            content_hash = hashlib.sha256(b"").hexdigest()
+            return {
+                "path": file_path,
+                "language": language,
+                "size_bytes": stat.st_size,
+                "content_hash": content_hash,
+                "content": None,
+                "metadata": {
+                    "extension": Path(file_path).suffix,
+                    "filename": Path(file_path).name,
+                    "directory": str(Path(file_path).parent),
+                    "is_binary": True,
+                },
+            }
 
         # Read file content (limit size)
         content = None
@@ -203,6 +240,7 @@ class RepositoryIngestionService:
                 "extension": Path(file_path).suffix,
                 "filename": Path(file_path).name,
                 "directory": str(Path(file_path).parent),
+                "is_binary": False,
             },
         }
 
@@ -283,36 +321,40 @@ class RepositoryIngestionService:
         branch: str = "main",
         access_token: Optional[str] = None,
     ) -> Dict:
-        """Full repository ingestion pipeline."""
-        # Update status
-        await self.update_repository_indexing_status(repository_id, "in_progress")
-
-        temp_dir = None
-        try:
-            # Clone
-            temp_dir = await self.clone_repository(repo_url, branch, access_token)
-
-            # Scan
-            files = self.scan_repository(temp_dir)
-
-            # Save
-            saved = await self.save_repository_files(repository_id, files)
+        """Full repository ingestion pipeline with its own DB session."""
+        async with async_session_maker() as session:
+            # Create a new service instance with the background session
+            bg_service = RepositoryIngestionService(session)
 
             # Update status
-            await self.update_repository_indexing_status(repository_id, "completed")
+            await bg_service.update_repository_indexing_status(repository_id, "in_progress")
 
-            return {
-                "status": "completed",
-                "files_processed": saved,
-                "languages": list(set(f["language"] for f in files if f["language"])),
-            }
+            temp_dir = None
+            try:
+                # Clone
+                temp_dir = await bg_service.clone_repository(repo_url, branch, access_token)
 
-        except Exception as e:
-            await self.update_repository_indexing_status(repository_id, "failed", str(e))
-            raise
-        finally:
-            if temp_dir:
-                shutil.rmtree(temp_dir, ignore_errors=True)
+                # Scan
+                files = bg_service.scan_repository(temp_dir)
+
+                # Save
+                saved = await bg_service.save_repository_files(repository_id, files)
+
+                # Update status
+                await bg_service.update_repository_indexing_status(repository_id, "completed")
+
+                return {
+                    "status": "completed",
+                    "files_processed": saved,
+                    "languages": list(set(f["language"] for f in files if f["language"])),
+                }
+
+            except Exception as e:
+                await bg_service.update_repository_indexing_status(repository_id, "failed", str(e))
+                raise
+            finally:
+                if temp_dir:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 async def get_ingestion_service(db: AsyncSession = Depends(get_db_session)) -> RepositoryIngestionService:

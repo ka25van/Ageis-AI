@@ -33,8 +33,8 @@ class Document(Base):
     )
 
     # Relationships
-    project = relationship("Project", back_populates="documents")
-    chunks = relationship("DocumentChunk", back_populates="document", lazy="selectin")
+    project = relationship("Project", back_populates="documents", lazy="raise")
+    chunks = relationship("DocumentChunk", back_populates="document", lazy="raise")
 
 
 class DocumentChunk(Base):
@@ -60,7 +60,7 @@ class DocumentChunk(Base):
 
     # Relationships
     document = relationship("Document", back_populates="chunks")
-    file = relationship("RepositoryFile", back_populates="chunks")
+    file = relationship("RepositoryFile", back_populates="chunks", lazy="raise")
 
     # Indexes
     __table_args__ = (

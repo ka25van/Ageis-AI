@@ -31,9 +31,9 @@ class Project(Base):
 
     # Relationships
     owner = relationship("User", back_populates="projects")
-    repositories = relationship("Repository", back_populates="project", lazy="selectin")
-    documents = relationship("Document", back_populates="project", lazy="selectin")
-    agent_runs = relationship("AgentRun", back_populates="project", lazy="selectin")
+    repositories = relationship("Repository", back_populates="project", lazy="raise")
+    documents = relationship("Document", back_populates="project", lazy="raise")
+    agent_runs = relationship("AgentRun", back_populates="project", lazy="raise")
 
 
 class Repository(Base):
@@ -65,7 +65,7 @@ class Repository(Base):
 
     # Relationships
     project = relationship("Project", back_populates="repositories")
-    files = relationship("RepositoryFile", back_populates="repository", lazy="selectin")
+    files = relationship("RepositoryFile", back_populates="repository", lazy="raise")
 
 
 class RepositoryFile(Base):
@@ -92,4 +92,4 @@ class RepositoryFile(Base):
 
     # Relationships
     repository = relationship("Repository", back_populates="files")
-    chunks = relationship("DocumentChunk", back_populates="file", lazy="selectin")
+    chunks = relationship("DocumentChunk", back_populates="file", lazy="raise")

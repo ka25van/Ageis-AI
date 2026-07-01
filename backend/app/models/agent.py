@@ -35,9 +35,9 @@ class AgentRun(Base):
     )
 
     # Relationships
-    project = relationship("Project", back_populates="agent_runs")
-    steps = relationship("AgentStep", back_populates="run", lazy="selectin")
-    approvals = relationship("Approval", back_populates="run", lazy="selectin")
+    project = relationship("Project", back_populates="agent_runs", lazy="raise")
+    steps = relationship("AgentStep", back_populates="run", lazy="raise")
+    approvals = relationship("Approval", back_populates="run", lazy="raise")
 
 
 class AgentStep(Base):
@@ -67,7 +67,7 @@ class AgentStep(Base):
     )
 
     # Relationships
-    run = relationship("AgentRun", back_populates="steps")
+    run = relationship("AgentRun", back_populates="steps", lazy="raise")
 
 
 class Approval(Base):
@@ -93,4 +93,4 @@ class Approval(Base):
     )
 
     # Relationships
-    run = relationship("AgentRun", back_populates="approvals")
+    run = relationship("AgentRun", back_populates="approvals", lazy="raise")

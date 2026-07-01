@@ -2,6 +2,8 @@ from typing import Dict, Optional
 from datetime import datetime, timedelta
 import time
 
+from fastapi import Depends
+
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, REGISTRY
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession

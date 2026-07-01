@@ -3,6 +3,7 @@ from uuid import UUID
 from collections import Counter
 import re
 
+from fastapi import Depends
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
