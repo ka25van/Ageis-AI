@@ -1,124 +1,125 @@
-from typing import Dict, List, Optional, Any
+from typing import Dict, List
 from uuid import UUID
-from datetime import datetime
 
 from fastapi import Depends
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.repository_analysis import RepositoryAnalyzer
+from app.models.project import RepositoryFile, Repository
+from app.services.llm_service import LLMService, get_llm_service
 from app.core.di import get_db_session
 
 
 class DocumentationAgent:
-    """Agent for generating README, API docs, and architecture docs."""
-
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, llm: LLMService):
         self.db = db
+        self.llm = llm
+
+    def _build_file_context(self, files: list, max_files: int = 30) -> str:
+        lines = []
+        for f in files[:max_files]:
+            lang = f.language or "unknown"
+            content = (f.content or "")[:500]
+            lines.append(f"## {f.path} [{lang}]\n```\n{content}\n```")
+        return "\n\n".join(lines)
 
     async def generate_readme(self, repository_id: UUID) -> Dict:
-        """Generate a README from repository structure."""
-        from app.models.project import RepositoryFile
-
         result = await self.db.execute(
             select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
         )
         files = result.scalars().all()
 
-        # Collect info
-        languages = set(f.language for f in files if f.language)
-        framework = self._detect_framework(files)
-        readme_files = [f for f in files if "readme" in f.path.lower()]
-
-        readme = f"""# {files[0].path.split('/')[0] if files else 'Unknown'} Repository
-
-## Overview
-A repository with {len(files)} files across {len(languages)} languages.
-
-## Languages
-{', '.join(languages) if languages else 'Unknown'}
-
-## Framework
-{framework or 'Unknown'}
-
-## Structure
-{self._summarize_structure(files)}
-
-## Getting Started
-Clone this repository and explore the code.
-
-## Features
-- {len(files)} files indexed
-- {sum(1 for f in files if f.content)} files with content
-- {len(readme_files)} README files found
-"""
-        return {"readme": readme, "files_analyzed": len(files)}
-
-    async def generate_api_documentation(self, repository_id: UUID) -> Dict:
-        """Generate API documentation from repository routes."""
-        from app.models.project import RepositoryFile
-
-        result = await self.db.execute(
-            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
+        repo_result = await self.db.execute(
+            select(Repository).where(Repository.id == repository_id)
         )
-        files = result.scalars().all()
+        repo = repo_result.scalar_one_or_none()
+        repo_name = repo.name if repo else "repository"
 
-        routes = []
-        for f in files:
-            if f.content:
-                # Look for API routes
-                if "fastapi" in f.content.lower() or "apirouter" in f.content.lower():
-                    lines = f.content.split("\n")
-                    for i, line in enumerate(lines):
-                        if "@router" in line or "@app" in line or "APIRouter" in line:
-                            routes.append({"file": f.path, "line": i + 1, "code": line.strip()})
+        languages = list(set(f.language for f in files if f.language))
+        paths = [f.path for f in files]
+        file_context = self._build_file_context(files)
+
+        system_prompt = """You are a technical documentation expert. Generate a comprehensive README.md for this repository.
+Include: title, description, features, tech stack, project structure, setup instructions, API overview (if applicable), and usage examples.
+Use proper markdown formatting."""
+
+        user_prompt = f"""Repository: {repo_name}
+Languages: {', '.join(languages)}
+Total Files: {len(files)}
+Structure:
+{chr(10).join(paths[:60])}
+
+Key file contents:
+{file_context[:6000]}"""
+
+        readme = await self.llm.generate(system_prompt, user_prompt)
 
         return {
-            "routes": routes[:10],
-            "total_routes": len(routes),
-            "summary": f"Found {len(routes)} API routes",
+            "readme": readme,
+            "files_analyzed": len(files),
+            "languages": languages,
+        }
+
+    async def generate_api_documentation(self, repository_id: UUID) -> Dict:
+        result = await self.db.execute(
+            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
+        )
+        files = result.scalars().all()
+
+        api_files = [f for f in files if f.content and any(
+            kw in f.content.lower() for kw in ["router", "route", "endpoint", "api", "flask", "django", "fastapi", "controller"]
+        )]
+        file_context = self._build_file_context(api_files[:20])
+
+        system_prompt = """You are an API documentation expert. Generate comprehensive API documentation for this codebase.
+Document all endpoints, request/response formats, authentication, and usage examples.
+Use proper markdown formatting."""
+
+        user_prompt = f"""API-related files found:
+{file_context[:6000]}"""
+
+        api_docs = await self.llm.generate(system_prompt, user_prompt)
+
+        return {
+            "api_documentation": api_docs,
+            "api_files_found": len(api_files),
+            "total_files": len(files),
         }
 
     async def generate_architecture_documentation(self, repository_id: UUID) -> Dict:
-        """Generate architecture documentation."""
-        from app.models.project import RepositoryFile
-
         result = await self.db.execute(
             select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
         )
         files = result.scalars().all()
 
-        layers = {"api": [], "models": [], "services": [], "tools": [], "config": []}
-        for f in files:
-            for layer in layers:
-                if f"/{layer}/" in f.path.lower():
-                    layers[layer].append(f.path)
+        file_context = self._build_file_context(files)
+        paths = [f.path for f in files]
+        languages = list(set(f.language for f in files if f.language))
+
+        system_prompt = """You are a software architect. Generate detailed architecture documentation.
+Analyze the directory structure, file organization, dependency flow, and component relationships.
+Include: high-level architecture, component diagram (text-based), data flow, layer descriptions, and technology decisions.
+Use proper markdown."""
+
+        user_prompt = f"""Total files: {len(files)}
+Languages: {', '.join(languages)}
+Directory structure:
+{chr(10).join(paths[:80])}
+
+Key file contents:
+{file_context[:5000]}"""
+
+        arch_docs = await self.llm.generate(system_prompt, user_prompt)
 
         return {
-            "layers": {k: v for k, v in layers.items() if v},
+            "architecture_documentation": arch_docs,
             "total_files": len(files),
-            "summary": f"Architecture: {', '.join(k for k, v in layers.items() if v)}",
+            "languages": languages,
         }
-
-    def _detect_framework(self, files: list) -> str:
-        """Detect framework from file content."""
-        all_content = " ".join(f.content or "" for f in files)
-        if "fastapi" in all_content.lower():
-            return "FastAPI"
-        if "django" in all_content.lower():
-            return "Django"
-        if "flask" in all_content.lower():
-            return "Flask"
-        return "Unknown"
-
-    def _summarize_structure(self, files: list) -> str:
-        """Summarize directory structure."""
-        paths = [f.path for f in files]
-        dirs = set(p.split("/")[0] for p in paths if "/" in p)
-        return f"Directories: {', '.join(dirs)}"
 
 
 async def get_documentation_agent(
     db: AsyncSession = Depends(get_db_session),
+    llm: LLMService = Depends(get_llm_service),
 ) -> DocumentationAgent:
-    return DocumentationAgent(db)
+    return DocumentationAgent(db, llm)

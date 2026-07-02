@@ -1,120 +1,29 @@
-from typing import Dict, List, Optional, Any
+from typing import Dict, List
 from uuid import UUID
 from collections import Counter
-import re
+import json
 
 from fastapi import Depends
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.project import RepositoryFile
+from app.services.llm_service import LLMService, get_llm_service
 from app.core.di import get_db_session
 
 
 class IncidentAgent:
-    """Agent for analyzing logs, finding root causes, and recommending fixes."""
-
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, llm: LLMService):
         self.db = db
+        self.llm = llm
 
-    # Common error patterns
-    ERROR_PATTERNS = [
-        r'error|exception|traceback|fail|crash|timeout|unreachable',
-        r'500|502|503|504',
-        r'stack overflow|out of memory|segmentation fault',
-        r'connection refused|connection reset|broken pipe',
-        r'permission denied|access denied|unauthorized',
-        r'deprecated|removed|obsolete',
-        r'not found|missing|nonexistent',
-        r'invalid|corrupt|malformed|unexpected',
+    ERROR_KEYWORDS = [
+        "error", "exception", "traceback", "fail", "crash",
+        "timeout", "unreachable", "permission denied", "access denied",
+        "unauthorized", "not found", "missing", "invalid",
     ]
 
-    ERROR_CATEGORIES = {
-        'timeout': 'Performance',
-        'memory': 'Resource',
-        'permission': 'Security',
-        'connection': 'Network',
-        'invalid': 'Configuration',
-        'not_found': 'Missing',
-        'error': 'General',
-    }
-
-    async def analyze_logs(self, repository_id: UUID, log_path: str = None) -> Dict:
-        """Analyze logs from a repository for error patterns."""
-        from app.models.project import RepositoryFile
-
-        result = await self.db.execute(
-            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
-        )
-        files = result.scalars().all()
-
-        errors_found = []
-        patterns = Counter()
-
-        for f in files:
-            if f.content:
-                for pattern in self.ERROR_PATTERNS:
-                    matches = re.findall(pattern, f.content, re.I)
-                    if matches:
-                        for match in matches:
-                            errors_found.append({
-                                "file": f.path,
-                                "pattern": match,
-                                "line": f.content.index(match) if match in f.content else 0,
-                            })
-                        patterns[len(matches)] += 1
-
-        return {
-            "errors_found": errors_found[:20],
-            "total_errors": len(errors_found),
-            "error_patterns": dict(patterns),
-            "files_analyzed": len(files),
-        }
-
-    async def analyze_errors(self, repository_id: UUID) -> Dict:
-        """Analyze error patterns for root cause classification."""
-        from app.models.project import RepositoryFile
-
-        result = await self.db.execute(
-            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
-        )
-        files = result.scalars().all()
-
-        if not files:
-            return {"error": "No files found"}
-
-        categories = Counter()
-        for f in files:
-            if f.content:
-                for category_key, category in self.ERROR_CATEGORIES.items():
-                    if category_key in f.content.lower():
-                        categories[category] += 1
-
-        return {
-            "categories": dict(categories),
-            "total_issues": sum(categories.values()),
-            "recommendations": self._generate_recommendations(categories),
-        }
-
-    async def root_cause_analysis(self, repository_id: UUID) -> Dict:
-        """Find root causes from error patterns."""
-        analysis = await self.analyze_errors(repository_id)
-
-        # Find most common category
-        if not analysis.get("categories"):
-            return {"error": "No errors found", "recommendations": ["No issues detected"]}
-
-        most_common = max(analysis["categories"], key=analysis["categories"].get)
-        return {
-            "root_cause": most_common,
-            "error_count": analysis["total_issues"],
-            "categories": analysis["categories"],
-            "recommendations": analysis["recommendations"],
-        }
-
     async def analyze_incidents(self, repository_id: UUID) -> Dict:
-        """Analyze all incidents from the repository."""
-        from app.models.project import RepositoryFile
-
         result = await self.db.execute(
             select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
         )
@@ -126,45 +35,112 @@ class IncidentAgent:
         incidents = []
         for f in files:
             if f.content:
-                for pattern in self.ERROR_PATTERNS:
-                    matches = re.findall(pattern, f.content, re.I)
-                    if matches:
+                for kw in self.ERROR_KEYWORDS:
+                    if kw in f.content.lower():
                         incidents.append({
                             "file": f.path,
-                            "pattern": pattern,
+                            "keyword": kw,
                             "language": f.language,
-                            "severity": "high" if "traceback" in pattern else "medium",
-                            "count": len(matches),
+                            "severity": "high" if kw in ("traceback", "crash", "exception") else "medium",
+                            "context": f.content[:200],
                         })
+
+        if not incidents:
+            return {
+                "incidents": [],
+                "total_incidents": 0,
+                "analysis": "No error patterns detected in this repository.",
+            }
+
+        context = json.dumps(incidents[:30], indent=2)
+        system_prompt = "You are a code analyst. Review these issues and give a brief analysis."
+        user_prompt = f"Issues found in codebase:\n{context}\n\nWrite a short summary of the most important problems."
+        analysis = await self.llm.generate(system_prompt, user_prompt)
+
+        parsed = {"analysis": analysis, "summary": analysis[:300]}
 
         return {
             "incidents": incidents[:10],
             "total_incidents": len(incidents),
+            **parsed,
         }
 
-    def _generate_recommendations(self, categories: Counter) -> List[str]:
-        """Generate recommendations based on error categories."""
-        recommendations = []
-        for category, count in categories.items():
-            if category == "Security":
-                recommendations.append("Review access controls and permissions")
-            elif category == "Network":
-                recommendations.append("Check network connectivity and firewalls")
-            elif category == "Configuration":
-                recommendations.append("Validate configuration files")
-            elif category == "Resource":
-                recommendations.append("Increase resource limits or optimize memory")
-            elif category == "Performance":
-                recommendations.append("Optimize queries and add caching")
-            elif category == "Missing":
-                recommendations.append("Verify all required dependencies are installed")
-            else:
-                recommendations.append(f"Investigate {category} issues")
+    async def root_cause_analysis(self, repository_id: UUID) -> Dict:
+        incidents_result = await self.analyze_incidents(repository_id)
+        if "error" in incidents_result:
+            return incidents_result
 
-        return recommendations
+        context = json.dumps(incidents_result.get("incidents", [])[:20], indent=2)
+        system_prompt = """You are a senior SRE performing root cause analysis. 
+For each issue found, determine the root cause, impact, and remediation steps.
+Format as JSON with keys: root_causes (list), impact_analysis, remediation_plan, prevention_strategies."""
+
+        user_prompt = f"Incidents:\n{context}"
+        analysis = await self.llm.generate(system_prompt, user_prompt)
+
+        try:
+            parsed = json.loads(analysis)
+        except json.JSONDecodeError:
+            parsed = {"analysis": analysis}
+
+        return {
+            "total_incidents": incidents_result.get("total_incidents", 0),
+            "summary": incidents_result.get("summary", ""),
+            **parsed,
+        }
+
+    async def analyze_errors(self, repository_id: UUID) -> Dict:
+        result = await self.db.execute(
+            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
+        )
+        files = result.scalars().all()
+
+        if not files:
+            return {"error": "No files found"}
+
+        categories = Counter()
+        error_contexts = []
+        for f in files:
+            if f.content:
+                for kw in self.ERROR_KEYWORDS:
+                    if kw in f.content.lower():
+                        categories[kw] += 1
+                        if len(error_contexts) < 20:
+                            error_contexts.append({
+                                "file": f.path,
+                                "keyword": kw,
+                                "context": f.content[:200],
+                            })
+
+        if not categories:
+            return {
+                "categories": {},
+                "total_issues": 0,
+                "recommendations": ["No error patterns detected"],
+            }
+
+        context = json.dumps(error_contexts, indent=2)
+        system_prompt = """Generate actionable recommendations based on these error patterns.
+Format as JSON with keys: recommendations (list of strings), priority_issues (list), quick_wins (list)."""
+
+        user_prompt = f"Error analysis:\nCategories: {dict(categories)}\nContext:\n{context}"
+        analysis = await self.llm.generate(system_prompt, user_prompt)
+
+        try:
+            parsed = json.loads(analysis)
+        except json.JSONDecodeError:
+            parsed = {"recommendations": [analysis]}
+
+        return {
+            "categories": dict(categories),
+            "total_issues": sum(categories.values()),
+            "error_details": error_contexts[:10],
+            **parsed,
+        }
 
 
 async def get_incident_agent(
     db: AsyncSession = Depends(get_db_session),
+    llm: LLMService = Depends(get_llm_service),
 ) -> IncidentAgent:
-    return IncidentAgent(db)
+    return IncidentAgent(db, llm)

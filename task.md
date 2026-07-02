@@ -447,10 +447,10 @@ Acceptance Criteria
 
 Tasks
 
-* [ ] Production Docker
-* [ ] GitHub Actions
-* [ ] AWS Deployment
-* [ ] Health Checks
+* [x] Production Docker
+* [x] GitHub Actions
+* [x] AWS Deployment
+* [x] Health Checks
 
 Acceptance Criteria
 

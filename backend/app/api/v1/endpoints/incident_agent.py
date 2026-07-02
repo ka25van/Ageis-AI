@@ -1,3 +1,4 @@
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,17 +13,22 @@ from app.services.incident_agent import IncidentAgent, get_incident_agent
 router = APIRouter(prefix="/incidents", tags=["incidents"])
 
 
+class RepoRequest(BaseModel):
+    repository_id: str
+
+
 @router.post("/analyze")
 async def analyze_logs(
-    repository_id: UUID,
+    body: RepoRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
     agent: IncidentAgent = Depends(get_incident_agent),
 ):
+    rid = UUID(body.repository_id)
     result = await db.execute(
         select(Repository, Project)
         .join(Project, Repository.project_id == Project.id)
-        .where(Repository.id == repository_id)
+        .where(Repository.id == rid)
     )
     row = result.first()
     if not row:
@@ -32,21 +38,22 @@ async def analyze_logs(
     if repo.indexing_status != "completed":
         raise HTTPException(status_code=400, detail=f"Repository not indexed (status: {repo.indexing_status})")
 
-    analysis = await agent.analyze_incidents(repository_id)
+    analysis = await agent.analyze_incidents(rid)
     return analysis
 
 
 @router.post("/root-cause")
 async def root_cause_analysis(
-    repository_id: UUID,
+    body: RepoRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
     agent: IncidentAgent = Depends(get_incident_agent),
 ):
+    rid = UUID(body.repository_id)
     result = await db.execute(
         select(Repository, Project)
         .join(Project, Repository.project_id == Project.id)
-        .where(Repository.id == repository_id)
+        .where(Repository.id == rid)
     )
     row = result.first()
     if not row:
@@ -56,21 +63,22 @@ async def root_cause_analysis(
     if repo.indexing_status != "completed":
         raise HTTPException(status_code=400, detail=f"Repository not indexed (status: {repo.indexing_status})")
 
-    analysis = await agent.root_cause_analysis(repository_id)
+    analysis = await agent.root_cause_analysis(rid)
     return analysis
 
 
 @router.post("/recommendations")
 async def get_recommendations(
-    repository_id: UUID,
+    body: RepoRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
     agent: IncidentAgent = Depends(get_incident_agent),
 ):
+    rid = UUID(body.repository_id)
     result = await db.execute(
         select(Repository, Project)
         .join(Project, Repository.project_id == Project.id)
-        .where(Repository.id == repository_id)
+        .where(Repository.id == rid)
     )
     row = result.first()
     if not row:
@@ -80,5 +88,5 @@ async def get_recommendations(
     if repo.indexing_status != "completed":
         raise HTTPException(status_code=400, detail=f"Repository not indexed (status: {repo.indexing_status})")
 
-    analysis = await agent.analyze_errors(repository_id)
+    analysis = await agent.analyze_errors(rid)
     return {"recommendations": analysis.get("recommendations", [])}

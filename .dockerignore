@@ -1,0 +1,17 @@
+.git
+.gitignore
+.gitattributes
+.env
+.env.*
+*.md
+node_modules
+__pycache__
+*.pyc
+.venv
+venv
+.vscode
+.idea
+*.log
+dist
+build
+.DS_Store

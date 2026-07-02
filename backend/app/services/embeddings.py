@@ -23,7 +23,7 @@ class EmbeddingService:
         self.db = db
         self.ollama_base_url = getattr(settings, "OLLAMA_BASE_URL", "http://localhost:11434")
         self.embedding_model = getattr(settings, "EMBEDDING_MODEL", "nomic-embed-text")
-        self.embedding_dim = 1536  # nomic-embed-text dimension
+        self.embedding_dim = 768  # nomic-embed-text dimension
 
     async def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings for a list of texts using Ollama."""
@@ -123,16 +123,16 @@ class EmbeddingService:
         from app.models.document import Document, DocumentChunk
 
         # Create a virtual document for this repository
+        from app.models.project import Repository
         doc_result = await self.db.execute(
             select(Document).where(Document.project_id.in_(
-                select(RepositoryFile.project_id).where(RepositoryFile.repository_id == repository_id)
+                select(Repository.project_id).where(Repository.id == repository_id)
             )).limit(1)
         )
         project_doc = doc_result.scalar_one_or_none()
 
         if not project_doc:
             # Get project from repository
-            from app.models.project import Repository
             repo_result = await self.db.execute(
                 select(Repository).where(Repository.id == repository_id)
             )
@@ -143,7 +143,7 @@ class EmbeddingService:
                     title=f"Repository: {repo.name}",
                     source_type="repository",
                     source_path=repo.url,
-                    metadata={"repository_id": str(repository_id)},
+                    doc_metadata={"repository_id": str(repository_id)},
                 )
                 self.db.add(project_doc)
                 await self.db.commit()
@@ -160,7 +160,7 @@ class EmbeddingService:
                     content=chunk_text,
                     token_count=len(chunk_text) // 4,
                     embedding=embedding,
-                    metadata={"repository_file_id": str(file_id)},
+                    chunk_metadata={"repository_file_id": str(file_id)},
                 )
                 self.db.add(chunk)
                 saved += 1
@@ -186,35 +186,36 @@ class EmbeddingService:
         if not query_embedding or len(query_embedding) != self.embedding_dim:
             return []
 
-        # Build query
+        # Format embedding as string for pgvector
+        emb_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
         from sqlalchemy import text
 
-        base_query = """
+        base_query = f"""
             SELECT
                 dc.id,
                 dc.content,
-                dc.metadata,
+                dc.chunk_metadata,
                 dc.chunk_index,
                 dc.token_count,
                 d.id as document_id,
                 d.title as document_title,
                 d.source_type,
-                d.metadata as document_metadata,
-                1 - (dc.embedding <=> :query_embedding) as similarity
+                d.doc_metadata as document_metadata,
+                1 - (dc.embedding <=> '{emb_str}'::vector) as similarity
             FROM document_chunks dc
             JOIN documents d ON dc.document_id = d.id
             WHERE dc.embedding IS NOT NULL
         """
 
-        params = {"query_embedding": query_embedding, "limit": limit}
+        params: dict = {"limit": limit}
 
         if project_id:
             base_query += " AND d.project_id = :project_id"
             params["project_id"] = str(project_id)
 
-        base_query += """
-            AND 1 - (dc.embedding <=> :query_embedding) >= :threshold
-            ORDER BY dc.embedding <=> :query_embedding
+        base_query += f"""
+            AND 1 - (dc.embedding <=> '{emb_str}'::vector) >= :threshold
+            ORDER BY dc.embedding <=> '{emb_str}'::vector
             LIMIT :limit
         """
         params["threshold"] = similarity_threshold
@@ -226,7 +227,7 @@ class EmbeddingService:
             {
                 "chunk_id": str(row.id),
                 "content": row.content,
-                "metadata": row.metadata,
+                "metadata": row.chunk_metadata,
                 "chunk_index": row.chunk_index,
                 "token_count": row.token_count,
                 "document_id": str(row.document_id),

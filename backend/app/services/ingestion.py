@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.project import Repository, RepositoryFile
 from app.core.di import get_db_session
 from app.db.session import async_session_maker
+from app.services.embeddings import EmbeddingService
 
 
 class RepositoryIngestionService:
@@ -342,6 +343,14 @@ class RepositoryIngestionService:
 
                 # Update status
                 await bg_service.update_repository_indexing_status(repository_id, "completed")
+
+                # Generate embeddings (creates Document + DocumentChunk records)
+                try:
+                    emb_service = EmbeddingService(session)
+                    embed_result = await emb_service.embed_and_store_repository_files(repository_id)
+                    await session.commit()
+                except Exception as e:
+                    print(f"Embedding generation failed (non-fatal): {e}")
 
                 return {
                     "status": "completed",

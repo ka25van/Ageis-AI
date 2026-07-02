@@ -52,7 +52,7 @@ class DocumentChunk(Base):
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    embedding: Mapped[Optional[list[float]]] = mapped_column(Vector(1536), nullable=True)
+    embedding: Mapped[Optional[list[float]]] = mapped_column(Vector(768), nullable=True)
     chunk_metadata: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, nullable=False

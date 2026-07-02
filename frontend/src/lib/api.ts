@@ -166,77 +166,20 @@ export const repositoriesApi = {
 export const documentsApi = {
   list: (project_id?: string) =>
     api<Document_[]>('/documents', { params: { project_id } }),
+  get: (id: string) =>
+    api<Record<string, unknown>>(`/documents/${id}`),
+  getChunks: (id: string) =>
+    api<Record<string, unknown>[]>(`/documents/${id}/chunks`),
 }
 
-// Planner
+// Planner Agent (decomposes tasks into execution steps)
 export const plannerApi = {
   planAndExecute: (task: string, project_id: string) =>
     api<{ run_id: string }>('/planner/plan', { method: 'POST', body: { task, project_id } }),
 }
 
-// Repository Agent
-export const repoAgentApi = {
-  understand: (repository_id: string) =>
-    api<Record<string, unknown>>(`/repo-agent/${repository_id}/understand`),
-  summarize: (repository_id: string) =>
-    api<Record<string, unknown>>(`/repo-agent/${repository_id}/summary`),
-  search: (repository_id: string, query: string) =>
-    api<Record<string, unknown>>(`/repo-agent/${repository_id}/search?query=${encodeURIComponent(query)}`),
-}
-
-// Knowledge Agent
-export const knowledgeAgentApi = {
-  search: (query: string, project_id?: string, limit?: number) =>
-    api<Record<string, unknown>>('/knowledge/search', {
-      method: 'POST',
-      body: { query, project_id: project_id || null, limit: limit || 10 },
-    }),
-}
-
-// Incident Agent
-export const incidentAgentApi = {
-  analyze: (repository_id: string) =>
-    api<Record<string, unknown>>('/incidents/analyze', {
-      method: 'POST',
-      body: { repository_id },
-    }),
-}
-
-// Documentation Agent
-export const docAgentApi = {
-  generateReadme: (repository_id: string) =>
-    api<Record<string, unknown>>('/docs/readme', {
-      method: 'POST',
-      body: { repository_id },
-    }),
-}
-
-// Code Review Agent
-export const codeReviewApi = {
-  reviewPR: (repository_id: string) =>
-    api<Record<string, unknown>>('/code-review/pr', {
-      method: 'POST',
-      body: { repository_id },
-    }),
-}
-
-// Workflow Engine (orchestrates multiple agents)
-export const workflowApi = {
-  execute: (task: string, project_id: string, steps: Record<string, unknown>[]) =>
-    api<{ run_id: string; result: Record<string, unknown> }>('/workflows/execute', {
-      method: 'POST',
-      body: { task, project_id, steps },
-    }),
-}
-
-// Agent Runs
-export const agentRunsApi = {
-  list: (project_id?: string) =>
-    api<AgentRun[]>('/workflows/runs', { params: { project_id } }),
-}
-
 // Repository Agent (understands code, summarizes architecture, searches code)
-export const repositoryAgentApi = {
+export const repoAgentApi = {
   understand: (repository_id: string) =>
     api<Record<string, unknown>>(`/repo-agent/${repository_id}/understand`),
   summarize: (repository_id: string) =>
@@ -284,7 +227,7 @@ export const incidentAgentApi = {
 }
 
 // Documentation Agent (generates README and API docs)
-export const documentationAgentApi = {
+export const docAgentApi = {
   generateReadme: (repository_id: string) =>
     api<Record<string, unknown>>('/docs/readme', {
       method: 'POST',
@@ -303,7 +246,7 @@ export const documentationAgentApi = {
 }
 
 // Code Review Agent (reviews PRs and security)
-export const codeReviewAgentApi = {
+export const codeReviewApi = {
   reviewPR: (repository_id: string) =>
     api<Record<string, unknown>>('/code-review/pr', {
       method: 'POST',
@@ -321,10 +264,19 @@ export const codeReviewAgentApi = {
     }),
 }
 
-// Planner Agent (decomposes tasks into execution steps)
-export const plannerAgentApi = {
-  planAndExecute: (task: string, project_id: string) =>
-    api<{ run_id: string }>('/planner/plan', { method: 'POST', body: { task, project_id } }),
+// Workflow Engine (orchestrates multiple agents)
+export const workflowApi = {
+  execute: (task: string, project_id: string, steps: Record<string, unknown>[]) =>
+    api<{ run_id: string; result: Record<string, unknown> }>('/workflows/execute', {
+      method: 'POST',
+      body: { task, project_id, steps },
+    }),
+}
+
+// Agent Runs
+export const agentRunsApi = {
+  list: (project_id?: string) =>
+    api<AgentRun[]>('/workflows/runs', { params: { project_id } }),
 }
 
 // Types

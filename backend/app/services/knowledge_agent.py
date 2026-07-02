@@ -1,5 +1,6 @@
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 from uuid import UUID
+import json
 
 from fastapi import Depends
 from sqlalchemy import select, text
@@ -7,51 +8,54 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document, DocumentChunk
 from app.services.embeddings import EmbeddingService, get_embedding_service
+from app.services.llm_service import LLMService, get_llm_service
 from app.core.di import get_db_session
 
 
 class KnowledgeAgent:
-    """Agent for retrieving and ranking knowledge from documents."""
-
-    def __init__(self, db: AsyncSession, embedding_service: EmbeddingService):
+    def __init__(self, db: AsyncSession, embedding_service: EmbeddingService, llm: LLMService):
         self.db = db
         self.embeddings = embedding_service
+        self.llm = llm
 
     async def retrieve_knowledge(self, query: str, project_id: UUID = None, limit: int = 10) -> Dict:
-        """Retrieve knowledge using hybrid search."""
-        # Generate embedding for semantic search
         embedding = await self.embeddings.generate_embeddings([query])
 
         if not embedding or not embedding[0]:
             return {"results": [], "count": 0}
 
         query_embedding = embedding[0]
+        emb_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
 
-        # Build query
-        base_query = """
+        base_query = f"""
             SELECT dc.id, dc.content, dc.chunk_index, dc.token_count,
                    d.id as document_id, d.title, d.source_type,
-                   d.metadata as document_metadata,
-                   1 - (dc.embedding <=> :query_embedding) as similarity
+                   d.doc_metadata as document_metadata,
+                   1 - (dc.embedding <=> '{emb_str}'::vector) as similarity
             FROM document_chunks dc
             JOIN documents d ON dc.document_id = d.id
             WHERE dc.embedding IS NOT NULL
         """
-        params = {"query_embedding": query_embedding, "limit": limit}
+        params: dict = {"limit": limit}
 
         if project_id:
             base_query += " AND d.project_id = :project_id"
             params["project_id"] = str(project_id)
 
-        base_query += """
-            AND 1 - (dc.embedding <=> :query_embedding) >= :threshold
-            ORDER BY dc.embedding <=> :query_embedding
+        base_query += f"""
+            AND 1 - (dc.embedding <=> '{emb_str}'::vector) >= :threshold
+            ORDER BY dc.embedding <=> '{emb_str}'::vector
             LIMIT :limit
         """
-        params["threshold"] = 0.7
+        params["threshold"] = 0.3
 
         result = await self.db.execute(text(base_query), params)
         rows = result.fetchall()
+
+        if not rows:
+            base_query_no_threshold = base_query.replace(f"AND 1 - (dc.embedding <=> '{emb_str}'::vector) >= :threshold", "")
+            result = await self.db.execute(text(base_query_no_threshold), {k: v for k, v in params.items() if k != "threshold"})
+            rows = result.fetchall()
 
         results = []
         for row in rows:
@@ -70,13 +74,9 @@ class KnowledgeAgent:
         return {"results": results, "count": len(results)}
 
     async def hybrid_search(self, query: str, project_id: UUID = None, limit: int = 10) -> Dict:
-        """Hybrid search combining semantic and keyword search."""
-        # Semantic search
         semantic_results = await self.retrieve_knowledge(query, project_id, limit)
         semantic_hits = {r["chunk_id"]: r for r in semantic_results["results"]}
 
-        # Keyword search (simple text match)
-        from app.models.document import DocumentChunk
         result = await self.db.execute(
             select(DocumentChunk)
             .where(DocumentChunk.content.ilike(f"%{query}%"))
@@ -84,7 +84,6 @@ class KnowledgeAgent:
         )
         keyword_results = result.scalars().all()
 
-        # Merge and rank
         combined = {}
         for r in semantic_results["results"]:
             combined[r["chunk_id"]] = r
@@ -98,13 +97,11 @@ class KnowledgeAgent:
                     "similarity": 0.5,
                 }
 
-        # Rank by similarity
         ranked = sorted(combined.values(), key=lambda x: x.get("similarity", 0), reverse=True)[:limit]
         return {"results": ranked, "count": len(ranked), "semantic_count": len(semantic_results["results"]),
                 "keyword_count": len(keyword_results)}
 
     async def rank_results(self, results: List[Dict], query: str) -> List[Dict]:
-        """Re-rank results by relevance to the query."""
         query_lower = query.lower()
         query_words = query_lower.split()
 
@@ -116,9 +113,37 @@ class KnowledgeAgent:
 
         return sorted(results, key=lambda x: x.get("relevance_score", 0), reverse=True)
 
+    async def query(self, question: str, project_id: UUID = None) -> Dict:
+        search_results = await self.hybrid_search(question, project_id, limit=5)
+        if not search_results["results"]:
+            return {
+                "answer": "I don't have enough information in the indexed documents to answer that.",
+                "sources": [],
+            }
+
+        context_parts = []
+        for r in search_results["results"]:
+            title = r.get("document_title", "Unknown")
+            content = r.get("content", "")
+            context_parts.append(f"[Source: {title}]\n{content}")
+
+        context = "\n\n---\n\n".join(context_parts)
+        system_prompt = "You are a helpful assistant. Answer the question using only the provided context."
+        user_prompt = f"Question: {question}\n\nRelevant context:\n{context[:6000]}"
+        answer = await self.llm.generate(system_prompt, user_prompt)
+
+        return {
+            "answer": answer,
+            "sources": [
+                {"title": r.get("document_title"), "similarity": r.get("similarity")}
+                for r in search_results["results"][:5]
+            ],
+        }
+
 
 async def get_knowledge_agent(
     db: AsyncSession = Depends(get_db_session),
     embedding_service: EmbeddingService = Depends(get_embedding_service),
+    llm: LLMService = Depends(get_llm_service),
 ) -> KnowledgeAgent:
-    return KnowledgeAgent(db, embedding_service)
+    return KnowledgeAgent(db, embedding_service, llm)

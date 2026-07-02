@@ -1,22 +1,33 @@
-FROM node:20-alpine AS base
+FROM node:20-alpine AS deps
 
 WORKDIR /app
 
-FROM base AS deps
+COPY package*.json ./
+RUN npm ci --only=production
+
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
 COPY package*.json ./
 RUN npm ci
 
-FROM base AS builder
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+COPY tsconfig*.json vite.config.ts index.html ./
+COPY public ./public
+COPY src ./src
+
 RUN npm run build
 
-FROM base AS runner
-ENV NODE_ENV=production
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./
+FROM nginx:1.27-alpine AS runner
 
-EXPOSE 5173
+RUN apk add --no-cache curl
 
-CMD ["npx", "vite", "preview", "--host", "0.0.0.0", "--port", "5173"]
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:80/ || exit 1
+
+CMD ["nginx", "-g", "daemon off;"]

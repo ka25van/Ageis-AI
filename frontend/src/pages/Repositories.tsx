@@ -11,7 +11,7 @@ export function Repositories() {
   const [projectId, setProjectId] = useState('')
   const [name, setName] = useState('')
   const [url, setUrl] = useState('')
-  const [branch, setBranch] = useState('main')
+  const [branch, setBranch] = useState('master')
   const [saving, setSaving] = useState(false)
   const [openMenu, setOpenMenu] = useState<string | null>(null)
 
@@ -36,7 +36,7 @@ export function Repositories() {
       await repositoriesApi.create({ project_id: projectId, name, url, branch })
       setName('')
       setUrl('')
-      setBranch('main')
+      setBranch('master')
       setProjectId('')
       setShowForm(false)
       await load()

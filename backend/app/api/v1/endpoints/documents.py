@@ -125,7 +125,7 @@ async def list_documents(
             "source_type": d.source_type,
             "source_url": d.source_url,
             "source_path": d.source_path,
-            "metadata": d.metadata,
+            "metadata": d.doc_metadata,
             "created_at": d.created_at.isoformat(),
             "updated_at": d.updated_at.isoformat(),
         }
@@ -199,7 +199,7 @@ async def get_document_chunks(
             "chunk_index": c.chunk_index,
             "content": c.content,
             "token_count": c.token_count,
-            "metadata": c.metadata,
+            "metadata": c.chunk_metadata,
             "created_at": c.created_at.isoformat(),
         }
         for c in chunks
