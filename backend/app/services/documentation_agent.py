@@ -25,7 +25,7 @@ class DocumentationAgent:
 
     async def generate_readme(self, repository_id: UUID) -> Dict:
         result = await self.db.execute(
-            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
+            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id).limit(200)
         )
         files = result.scalars().all()
 
@@ -62,7 +62,7 @@ Key file contents:
 
     async def generate_api_documentation(self, repository_id: UUID) -> Dict:
         result = await self.db.execute(
-            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
+            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id).limit(200)
         )
         files = result.scalars().all()
 
@@ -88,7 +88,7 @@ Use proper markdown formatting."""
 
     async def generate_architecture_documentation(self, repository_id: UUID) -> Dict:
         result = await self.db.execute(
-            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
+            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id).limit(200)
         )
         files = result.scalars().all()
 

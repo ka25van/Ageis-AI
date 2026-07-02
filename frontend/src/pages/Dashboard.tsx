@@ -114,7 +114,7 @@ export function Dashboard() {
             </div>
             <span className="text-sm font-medium text-gray-700">Run Agent</span>
           </button>
-          <button className="group flex flex-col items-center gap-3 rounded-lg border border-gray-200 p-6 hover:border-blue-300 hover:bg-blue-50 transition-colors">
+          <button onClick={() => navigate('/agents')} className="group flex flex-col items-center gap-3 rounded-lg border border-gray-200 p-6 hover:border-blue-300 hover:bg-blue-50 transition-colors">
             <div className="p-3 rounded-lg bg-orange-100 text-orange-600 group-hover:bg-orange-200">
               <Server className="h-6 w-6" />
             </div>

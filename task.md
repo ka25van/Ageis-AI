@@ -451,6 +451,7 @@ Tasks
 * [x] GitHub Actions
 * [x] AWS Deployment
 * [x] Health Checks
+* [x] Deploy Agent (backend service + endpoint + frontend card + dashboard button)
 
 Acceptance Criteria
 
@@ -462,12 +463,12 @@ Acceptance Criteria
 
 Tasks
 
-* [ ] Documentation
-* [ ] Screenshots
-* [ ] Demo GIF
-* [ ] README updates
-* [ ] Performance optimization
-* [ ] Bug fixes
+* [x] Documentation
+* [x] Screenshots (placeholder dir ready — instructions to generate in `docs/screenshots/README.md`)
+* [ ] Demo GIF (requires screen recording tool — instructions provided in `docs/screenshots/README.md`)
+* [x] README updates
+* [x] Performance optimization (added `.limit(200)` to prevent unbounded file reads)
+* [x] Bug fixes (fixed 1B model prompting, simplified JSON→plain text)
 
 Acceptance Criteria
 

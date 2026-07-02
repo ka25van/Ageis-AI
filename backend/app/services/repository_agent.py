@@ -27,7 +27,7 @@ class RepositoryAgent:
 
     async def understand_code(self, repository_id: UUID) -> Dict:
         result = await self.db.execute(
-            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
+            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id).limit(200)
         )
         files = result.scalars().all()
 

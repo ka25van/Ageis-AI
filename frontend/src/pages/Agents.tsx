@@ -3,7 +3,7 @@ import { Bot, CheckCircle, Clock, AlertCircle, Play, Loader2, Terminal, ChevronD
 import {
   agentRunsApi, projectsApi, repositoriesApi,
   plannerApi, repoAgentApi, knowledgeAgentApi,
-  incidentAgentApi, docAgentApi, codeReviewApi,
+  incidentAgentApi, docAgentApi, codeReviewApi, deployApi,
 } from '../lib/api'
 import type { AgentRun, Project, Repository } from '../lib/api'
 
@@ -22,6 +22,7 @@ const agents: AgentDef[] = [
   { type: 'incident', name: 'Incident Agent', desc: 'Analyzes logs, finds root causes, gives recommendations', needsRepo: true, needsProject: false },
   { type: 'documentation', name: 'Documentation Agent', desc: 'Generates README and API architecture docs', needsRepo: true, needsProject: false },
   { type: 'code-review', name: 'Code Review Agent', desc: 'Reviews PRs, security, and best practices', needsRepo: true, needsProject: false },
+  { type: 'deploy', name: 'Deploy Agent', desc: 'Analyzes deployment configs and infrastructure', needsRepo: true, needsProject: false },
 ]
 
 const statusIcon = (status: string) => {
@@ -99,6 +100,9 @@ export function Agents() {
           break
         case 'code-review':
           res = await codeReviewApi.reviewPR(selectedRepo)
+          break
+        case 'deploy':
+          res = await deployApi.analyze(selectedRepo)
           break
         default:
           res = { error: 'Unknown agent type' }

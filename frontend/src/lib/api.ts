@@ -264,6 +264,15 @@ export const codeReviewApi = {
     }),
 }
 
+// Deploy Agent (analyzes deployment configs)
+export const deployApi = {
+  analyze: (repository_id: string) =>
+    api<Record<string, unknown>>('/deploy/analyze', {
+      method: 'POST',
+      body: { repository_id },
+    }),
+}
+
 // Workflow Engine (orchestrates multiple agents)
 export const workflowApi = {
   execute: (task: string, project_id: string, steps: Record<string, unknown>[]) =>
