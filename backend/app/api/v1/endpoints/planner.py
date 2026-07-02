@@ -1,3 +1,4 @@
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,14 +13,20 @@ from app.services.planner import PlannerAgent, get_planner
 router = APIRouter(prefix="/planner", tags=["planner"])
 
 
+class PlanRequest(BaseModel):
+    task: str
+    project_id: str
+
+
 @router.post("/plan")
 async def plan_and_execute(
-    task: str,
-    project_id: UUID,
+    body: PlanRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
     planner: PlannerAgent = Depends(get_planner),
 ):
+    project_id = UUID(body.project_id)
+    task = body.task
     # Verify project ownership
     result = await db.execute(
         select(Project).where(Project.id == project_id, Project.owner_id == current_user.id)

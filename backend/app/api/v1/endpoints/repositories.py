@@ -1,5 +1,6 @@
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
-from sqlalchemy import select
+from sqlalchemy import select, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
@@ -12,18 +13,23 @@ from app.services.ingestion import RepositoryIngestionService, get_ingestion_ser
 router = APIRouter(prefix="/repositories", tags=["repositories"])
 
 
+class CreateRepositoryRequest(BaseModel):
+    project_id: str
+    name: str
+    url: str
+    branch: str = "main"
+    provider: str = "github"
+    access_token: str | None = None
+    is_private: bool = True
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_repository(
-    project_id: UUID,
-    name: str,
-    url: str,
-    branch: str = "main",
-    provider: str = "github",
-    access_token: str | None = None,
-    is_private: bool = True,
+    body: CreateRepositoryRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
+    project_id = UUID(body.project_id)
     # Verify project ownership
     result = await db.execute(
         select(Project).where(Project.id == project_id, Project.owner_id == current_user.id)
@@ -38,12 +44,12 @@ async def create_repository(
 
     repository = Repository(
         project_id=project_id,
-        name=name,
-        url=url,
-        branch=branch,
-        provider=provider,
-        access_token_encrypted=access_token,  # TODO: encrypt
-        is_private=is_private,
+        name=body.name,
+        url=body.url,
+        branch=body.branch,
+        provider=body.provider,
+        access_token_encrypted=body.access_token,  # TODO: encrypt
+        is_private=body.is_private,
         indexing_status="pending",
     )
     db.add(repository)
@@ -208,9 +214,33 @@ async def list_repository_files(
             "language": f.language,
             "size_bytes": f.size_bytes,
             "content_hash": f.content_hash,
-            "metadata": f.metadata,
+            "metadata": f.file_metadata,
             "created_at": f.created_at.isoformat(),
             "updated_at": f.updated_at.isoformat(),
         }
         for f in files
     ]
+
+
+@router.delete("/{repository_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_repository(
+    repository_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    stmt = (
+        sa_delete(Repository)
+        .where(Repository.id == repository_id)
+        .where(
+            Repository.project_id == select(Project.id).where(
+                Project.owner_id == current_user.id
+            ).scalar_subquery()
+        )
+    )
+    result = await db.execute(stmt)
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Repository not found",
+        )
+    await db.commit()

@@ -1,5 +1,6 @@
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
@@ -11,16 +12,20 @@ from app.models.project import Project
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
+class CreateProjectRequest(BaseModel):
+    name: str
+    description: str | None = None
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_project(
-    name: str,
-    description: str | None = None,
+    body: CreateProjectRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
     project = Project(
-        name=name,
-        description=description,
+        name=body.name,
+        description=body.description,
         owner_id=current_user.id,
     )
     db.add(project)
@@ -91,12 +96,16 @@ async def get_project(
     }
 
 
+class UpdateProjectRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    is_active: bool | None = None
+
+
 @router.patch("/{project_id}")
 async def update_project(
     project_id: UUID,
-    name: str | None = None,
-    description: str | None = None,
-    is_active: bool | None = None,
+    body: UpdateProjectRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -111,12 +120,12 @@ async def update_project(
             detail="Project not found",
         )
 
-    if name is not None:
-        project.name = name
-    if description is not None:
-        project.description = description
-    if is_active is not None:
-        project.is_active = is_active
+    if body.name is not None:
+        project.name = body.name
+    if body.description is not None:
+        project.description = body.description
+    if body.is_active is not None:
+        project.is_active = body.is_active
 
     await db.commit()
     await db.refresh(project)
@@ -138,16 +147,14 @@ async def delete_project(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(
-        select(Project).where(Project.id == project_id, Project.owner_id == current_user.id)
+    stmt = sa_delete(Project).where(
+        Project.id == project_id,
+        Project.owner_id == current_user.id,
     )
-    project = result.scalar_one_or_none()
-
-    if not project:
+    result = await db.execute(stmt)
+    if result.rowcount == 0:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
-
-    await db.delete(project)
     await db.commit()

@@ -1,13 +1,29 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Header
-from sqlalchemy import select
+import secrets
+from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, status, Header, Body
+from sqlalchemy import select, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
+from uuid import UUID
 
 from app.core.di import get_db_session
 from app.core.security import create_token_pair, decode_token, get_password_hash, verify_password
-from app.models.user import User
+from app.models.user import User, APIKey
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+class UpdateProfileRequest(BaseModel):
+    full_name: str | None = None
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class CreateApiKeyRequest(BaseModel):
+    name: str
 
 
 async def get_current_user(
@@ -49,9 +65,9 @@ async def get_current_user(
 
 @router.post("/register")
 async def register(
-    email: str,
-    password: str,
-    full_name: str | None = None,
+    email: str = Body(...),
+    password: str = Body(...),
+    full_name: str | None = Body(None),
     db: AsyncSession = Depends(get_db_session),
 ):
     # Check if user exists
@@ -85,8 +101,8 @@ async def register(
 
 @router.post("/login")
 async def login(
-    email: str,
-    password: str,
+    email: str = Body(...),
+    password: str = Body(...),
     db: AsyncSession = Depends(get_db_session),
 ):
     result = await db.execute(select(User).where(User.email == email))
@@ -117,7 +133,7 @@ async def login(
 
 @router.post("/refresh")
 async def refresh_token(
-    refresh_token: str,
+    refresh_token: str = Body(...),
     db: AsyncSession = Depends(get_db_session),
 ):
     payload = decode_token(refresh_token)
@@ -154,6 +170,111 @@ async def get_current_user_info(
         "is_active": current_user.is_active,
         "is_superuser": current_user.is_superuser,
     }
+
+
+@router.patch("/me")
+async def update_profile(
+    body: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    if body.full_name is not None:
+        current_user.full_name = body.full_name
+    await db.commit()
+    await db.refresh(current_user)
+    return {
+        "id": str(current_user.id),
+        "email": current_user.email,
+        "full_name": current_user.full_name,
+        "is_active": current_user.is_active,
+        "is_superuser": current_user.is_superuser,
+    }
+
+
+@router.post("/change-password")
+async def change_password(
+    body: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    if not verify_password(body.current_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    current_user.hashed_password = get_password_hash(body.new_password)
+    await db.commit()
+    return {"message": "Password changed"}
+
+
+@router.get("/api-keys")
+async def list_api_keys(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    result = await db.execute(
+        select(APIKey).where(APIKey.user_id == current_user.id)
+    )
+    keys = result.scalars().all()
+    return [
+        {
+            "id": str(k.id),
+            "name": k.name,
+            "key_prefix": k.key_prefix,
+            "is_active": k.is_active,
+            "created_at": k.created_at.isoformat(),
+            "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+        }
+        for k in keys
+    ]
+
+
+@router.post("/api-keys")
+async def create_api_key(
+    body: CreateApiKeyRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    raw_key = f"aeg_{secrets.token_hex(24)}"
+    key_prefix = raw_key[:12]
+    key_hash = get_password_hash(raw_key)
+
+    api_key = APIKey(
+        user_id=current_user.id,
+        name=body.name,
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+    )
+    db.add(api_key)
+    await db.commit()
+    await db.refresh(api_key)
+
+    return {
+        "id": str(api_key.id),
+        "name": api_key.name,
+        "key": raw_key,
+        "key_prefix": key_prefix,
+        "created_at": api_key.created_at.isoformat(),
+    }
+
+
+@router.delete("/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_api_key(
+    key_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    stmt = sa_delete(APIKey).where(
+        APIKey.id == key_id,
+        APIKey.user_id == current_user.id,
+    )
+    result = await db.execute(stmt)
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="API key not found",
+        )
+    await db.commit()
 
 
 # Export for other routers to use
