@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Bot, CheckCircle, Clock, AlertCircle, Play, Loader2, Terminal, ChevronDown, ChevronUp, RotateCw } from 'lucide-react'
+import { Bot, CheckCircle, Clock, AlertCircle, Play, Loader2, Terminal, ChevronDown, ChevronUp, RotateCw, Brain } from 'lucide-react'
 import {
   agentRunsApi, projectsApi, repositoriesApi,
   plannerApi, repoAgentApi, knowledgeAgentApi,
-  incidentAgentApi, docAgentApi, codeReviewApi, deployApi,
+  incidentAgentApi, docAgentApi, codeReviewApi, deployApi, memoryApi,
 } from '../lib/api'
 import type { AgentRun, Project, Repository } from '../lib/api'
 
@@ -45,6 +45,8 @@ export function Agents() {
   const [runningType, setRunningType] = useState<string | null>(null)
   const [result, setResult] = useState<Record<string, unknown> | null>(null)
   const [expandedRun, setExpandedRun] = useState<string | null>(null)
+  const [runMemory, setRunMemory] = useState<Record<string, Record<string, unknown>>>({})
+  const [loadingMemory, setLoadingMemory] = useState<string | null>(null)
 
   async function load() {
     try {
@@ -272,9 +274,33 @@ export function Agents() {
                       </div>
                     )}
                     {r.error && (
-                      <div>
+                      <div className="mb-2">
                         <p className="text-xs font-medium text-red-500 mb-1">Error</p>
                         <pre className="text-xs text-red-600 bg-red-50 rounded p-3">{r.error}</pre>
+                      </div>
+                    )}
+                    <button onClick={async (e) => {
+                      e.stopPropagation()
+                      if (runMemory[r.id]) { setRunMemory(prev => { const copy = { ...prev }; delete copy[r.id]; return copy }); return }
+                      setLoadingMemory(r.id)
+                      try {
+                        const mem = await memoryApi.getRunMemory(r.id)
+                        setRunMemory(prev => ({ ...prev, [r.id]: mem }))
+                      } catch {
+                        setRunMemory(prev => ({ ...prev, [r.id]: {} }))
+                      }
+                      finally { setLoadingMemory(null) }
+                    }}
+                      className="flex items-center gap-1 text-xs text-purple-600 hover:text-purple-700 font-medium mt-2">
+                      {loadingMemory === r.id
+                        ? <><Loader2 className="h-3 w-3 animate-spin" /> Loading memory...</>
+                        : <><Brain className="h-3 w-3" /> {runMemory[r.id] ? 'Hide Memory' : 'View Memory'}</>
+                      }
+                    </button>
+                    {runMemory[r.id] && (
+                      <div className="mt-2">
+                        <p className="text-xs font-medium text-gray-500 mb-1">Stored Memory</p>
+                        <pre className="text-xs bg-purple-50 rounded p-3 overflow-auto max-h-40 whitespace-pre-wrap">{JSON.stringify(runMemory[r.id], null, 2)}</pre>
                       </div>
                     )}
                   </div>

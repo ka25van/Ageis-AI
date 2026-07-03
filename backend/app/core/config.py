@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     MAX_TOKENS: int = 4096
     TEMPERATURE: float = 0.7
 
+    # Hardcoded limit replacements (Milestone 7)
+    REPOSITORY_FILE_LIMIT: int = 200
+    BATCH_FILE_LIMIT: int = 500
+    FILE_PREVIEW_LIMIT: int = 50
+    FILE_PREVIEW_CHARS: int = 300
+    CONTEXT_TRUNCATION_LIMIT: int = 30
+    SIMILARITY_THRESHOLD: float = 0.3
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

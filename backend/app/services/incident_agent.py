@@ -4,18 +4,31 @@ from collections import Counter
 import json
 
 from fastapi import Depends
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.project import RepositoryFile
 from app.services.llm_service import LLMService, get_llm_service
+from app.services.repository_data_service import RepositoryDataService, get_repository_data_service
+from app.services.agent_base import AgentResult
+from app.services.context_builder import ProjectContext
 from app.core.di import get_db_session
+from app.core.config import settings
 
 
 class IncidentAgent:
-    def __init__(self, db: AsyncSession, llm: LLMService):
-        self.db = db
+    def __init__(self, repo_data: RepositoryDataService, llm: LLMService):
+        self.repo_data = repo_data
         self.llm = llm
+
+    async def process(self, context: ProjectContext) -> AgentResult:
+        result = await self.analyze_incidents(context.project_id)
+        result_text = result.get("analysis", json.dumps(result))
+        return AgentResult(
+            result=result_text,
+            confidence=0.8,
+            recommendations=[result.get("analysis", "")],
+            follow_up_actions=["Run root cause analysis", "View error recommendations"],
+            details=result,
+        )
 
     ERROR_KEYWORDS = [
         "error", "exception", "traceback", "fail", "crash",
@@ -24,11 +37,7 @@ class IncidentAgent:
     ]
 
     async def analyze_incidents(self, repository_id: UUID) -> Dict:
-        result = await self.db.execute(
-            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id).limit(200)
-        )
-        files = result.scalars().all()
-
+        files = await self.repo_data.get_files(repository_id)
         if not files:
             return {"error": "No files found"}
 
@@ -90,11 +99,7 @@ Format as JSON with keys: root_causes (list), impact_analysis, remediation_plan,
         }
 
     async def analyze_errors(self, repository_id: UUID) -> Dict:
-        result = await self.db.execute(
-            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
-        )
-        files = result.scalars().all()
-
+        files = await self.repo_data.get_files(repository_id, limit=settings.BATCH_FILE_LIMIT)
         if not files:
             return {"error": "No files found"}
 
@@ -140,7 +145,7 @@ Format as JSON with keys: recommendations (list of strings), priority_issues (li
 
 
 async def get_incident_agent(
-    db: AsyncSession = Depends(get_db_session),
+    repo_data: RepositoryDataService = Depends(get_repository_data_service),
     llm: LLMService = Depends(get_llm_service),
 ) -> IncidentAgent:
-    return IncidentAgent(db, llm)
+    return IncidentAgent(repo_data, llm)

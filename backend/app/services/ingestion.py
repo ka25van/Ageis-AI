@@ -1,4 +1,5 @@
 import os
+import logging
 import subprocess
 import tempfile
 import shutil
@@ -7,12 +8,15 @@ from typing import List, Dict, Optional
 from datetime import datetime
 from uuid import UUID
 
+logger = logging.getLogger(__name__)
+
 from fastapi import Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.project import Repository, RepositoryFile
 from app.core.di import get_db_session
+from app.services.repository_intelligence import RepositoryIntelligence
 from app.db.session import async_session_maker
 from app.services.embeddings import EmbeddingService
 
@@ -267,7 +271,7 @@ class RepositoryIngestionService:
                     metadata = self.extract_file_metadata(repo_path, file_path)
                     files.append(metadata)
                 except Exception as e:
-                    print(f"Error processing {file_path}: {e}")
+                    logger.warning(f"Error processing {file_path}: {e}")
                     continue
 
         return files
@@ -303,7 +307,6 @@ class RepositoryIngestionService:
         error: Optional[str] = None,
     ):
         """Update repository indexing status."""
-        from app.models.project import Repository
         result = await self.db.execute(
             select(Repository).where(Repository.id == repository_id)
         )
@@ -350,7 +353,10 @@ class RepositoryIngestionService:
                     embed_result = await emb_service.embed_and_store_repository_files(repository_id)
                     await session.commit()
                 except Exception as e:
-                    print(f"Embedding generation failed (non-fatal): {e}")
+                    logger.warning(f"Embedding generation failed (non-fatal): {e}")
+
+                # Invalidate RepositoryIntelligence cache so next agent call gets fresh data
+                RepositoryIntelligence.invalidate(repository_id)
 
                 return {
                     "status": "completed",

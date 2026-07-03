@@ -7,7 +7,8 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import DocumentChunk
-from app.models.agent import AgentRun
+from app.models.agent import AgentRun, AgentStep
+from app.models.memory import LongTermMemory, SemanticMemory
 from app.services.embeddings import EmbeddingService, get_embedding_service
 from app.core.di import get_db_session
 
@@ -18,7 +19,6 @@ class MemorySystem:
         self.embeddings = embeddings
 
     async def store_short_term(self, run_id: UUID, key: str, value: Any) -> None:
-        from app.models.agent import AgentStep
         step = AgentStep(
             run_id=run_id, step_index=-1, step_type="memory",
             name=f"memory:{key}",
@@ -29,7 +29,6 @@ class MemorySystem:
         await self.db.commit()
 
     async def get_short_term(self, run_id: UUID, key: str) -> Optional[Any]:
-        from app.models.agent import AgentStep
         result = await self.db.execute(
             select(AgentStep).where(
                 AgentStep.run_id == run_id, AgentStep.name == f"memory:{key}",
@@ -39,7 +38,6 @@ class MemorySystem:
         return step.input_data.get("value") if step else None
 
     async def store_long_term(self, user_id: UUID, key: str, value: Any, ttl_days: int = 30) -> None:
-        from app.models.memory import LongTermMemory
         self.db.add(LongTermMemory(
             user_id=user_id, key=key, value=value,
             expires_at=datetime.utcnow() + timedelta(days=ttl_days),
@@ -47,7 +45,6 @@ class MemorySystem:
         await self.db.commit()
 
     async def get_long_term(self, user_id: UUID, key: str) -> Optional[Any]:
-        from app.models.memory import LongTermMemory
         result = await self.db.execute(
             select(LongTermMemory).where(
                 LongTermMemory.user_id == user_id, LongTermMemory.key == key,
@@ -58,23 +55,90 @@ class MemorySystem:
         return mem.value if mem else None
 
     async def store_semantic(self, text: str, embedding: List[float], metadata: Dict = None) -> None:
-        from app.models.memory import SemanticMemory
-        self.db.add(SemanticMemory(text=text, embedding=embedding, metadata=metadata or {}))
+        self.db.add(SemanticMemory(text=text, embedding=embedding, doc_metadata=metadata or {}))
         await self.db.commit()
 
+    async def list_semantic(self, limit: int = 50) -> List[Dict]:
+        result = await self.db.execute(
+            select(SemanticMemory).order_by(SemanticMemory.created_at.desc()).limit(limit)
+        )
+        rows = result.scalars().all()
+        return [
+            {
+                "id": str(r.id),
+                "text": r.text[:500],
+                "metadata": r.doc_metadata,
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in rows
+        ]
+
     async def search_semantic(self, query: str, limit: int = 5, threshold: float = 0.5) -> List[Dict]:
-        from app.models.memory import SemanticMemory
-        qe = (await self.embeddings.generate_embeddings([query]))[0]
-        if not qe:
+        return await self.embeddings.semantic_search(
+            query=query, limit=limit,
+            similarity_threshold=threshold,
+            table_name="semantic_memory",
+        )
+
+    # --- Conversation Memory ---
+
+    async def store_conversation(self, project_id: UUID, user_id: UUID, role: str, content: str) -> None:
+        key = f"conversation:{project_id}:{user_id}"
+        existing = await self.get_long_term(user_id, key)
+        messages = existing if isinstance(existing, list) else []
+        messages.append({"role": role, "content": content, "timestamp": datetime.utcnow().isoformat()})
+        # Truncate to last 50 messages
+        if len(messages) > 50:
+            messages = messages[-50:]
+        await self.store_long_term(user_id, key, messages, ttl_days=7)
+
+    async def get_conversation(self, project_id: UUID, user_id: UUID, limit: int = 20) -> List[Dict]:
+        key = f"conversation:{project_id}:{user_id}"
+        existing = await self.get_long_term(user_id, key)
+        if not existing or not isinstance(existing, list):
             return []
-        emb_str = "[" + ",".join(str(v) for v in qe) + "]"
-        result = await self.db.execute(text(f"""
-            SELECT id, text, metadata, 1 - (embedding <=> '{emb_str}'::vector) as similarity
-            FROM semantic_memory
-            WHERE 1 - (embedding <=> '{emb_str}'::vector) >= :threshold
-            ORDER BY embedding <=> '{emb_str}'::vector LIMIT :limit
-        """), {"threshold": threshold, "limit": limit})
-        return [dict(row) for row in result]
+        return existing[-limit:]
+
+    async def clear_conversation(self, project_id: UUID, user_id: UUID) -> None:
+        key = f"conversation:{project_id}:{user_id}"
+        result = await self.db.execute(
+            select(LongTermMemory).where(
+                LongTermMemory.user_id == user_id, LongTermMemory.key == key,
+            )
+        )
+        mem = result.scalar_one_or_none()
+        if mem:
+            await self.db.delete(mem)
+            await self.db.commit()
+
+    # --- Repository Memory (persisted cache) ---
+
+    async def store_repository_memory(self, repository_id: UUID, analysis: Dict) -> None:
+        await self.store_long_term(
+            user_id=UUID("00000000-0000-0000-0000-000000000000"),
+            key=f"repo_analysis:{repository_id}",
+            value=analysis,
+            ttl_days=30,
+        )
+
+    async def get_repository_memory(self, repository_id: UUID) -> Optional[Dict]:
+        return await self.get_long_term(
+            user_id=UUID("00000000-0000-0000-0000-000000000000"),
+            key=f"repo_analysis:{repository_id}",
+        )
+
+    async def delete_repository_memory(self, repository_id: UUID) -> None:
+        key = f"repo_analysis:{repository_id}"
+        result = await self.db.execute(
+            select(LongTermMemory).where(
+                LongTermMemory.user_id == UUID("00000000-0000-0000-0000-000000000000"),
+                LongTermMemory.key == key,
+            )
+        )
+        mem = result.scalar_one_or_none()
+        if mem:
+            await self.db.delete(mem)
+            await self.db.commit()
 
     async def summarize_run(self, run_id: UUID) -> Dict:
         result = await self.db.execute(

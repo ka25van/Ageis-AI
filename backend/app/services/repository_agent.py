@@ -3,45 +3,42 @@ from uuid import UUID
 import json
 
 from fastapi import Depends
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.project import Repository, RepositoryFile
 from app.services.llm_service import LLMService, get_llm_service
+from app.services.repository_data_service import RepositoryDataService, get_repository_data_service
+from app.services.agent_base import AgentResult
+from app.services.context_builder import ProjectContext
 from app.core.di import get_db_session
+from app.core.config import settings
 
 
 class RepositoryAgent:
-    def __init__(self, db: AsyncSession, llm: LLMService):
-        self.db = db
+    def __init__(self, repo_data: RepositoryDataService, llm: LLMService):
+        self.repo_data = repo_data
         self.llm = llm
 
-    def _build_file_summary(self, files: list) -> str:
-        lines = []
-        for f in files[:50]:
-            lang = f.language or "unknown"
-            size = f.size_bytes or 0
-            preview = (f.content or "")[:300]
-            lines.append(f"### {f.path} [{lang}] ({size} bytes)\n```\n{preview}\n```")
-        return "\n\n".join(lines)
+    async def process(self, context: ProjectContext) -> AgentResult:
+        """Entry point for ContextBuilder-driven execution."""
+        analysis = await self.understand_code(context.project_id)
+        result_text = analysis.get("analysis", json.dumps(analysis))
+        return AgentResult(
+            result=result_text,
+            confidence=0.85,
+            recommendations=[],
+            follow_up_actions=["View architecture summary", "Search specific code"],
+            details=analysis,
+        )
 
     async def understand_code(self, repository_id: UUID) -> Dict:
-        result = await self.db.execute(
-            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id).limit(200)
-        )
-        files = result.scalars().all()
-
+        files = await self.repo_data.get_files(repository_id)
         if not files:
             return {"error": "No files found", "repository_id": str(repository_id)}
 
-        file_summary = self._build_file_summary(files)
-        languages = list(set(f.language for f in files if f.language))
-        paths = [f.path for f in files]
-
-        repo_result = await self.db.execute(
-            select(Repository).where(Repository.id == repository_id)
-        )
-        repo = repo_result.scalar_one_or_none()
+        file_summary = await self.repo_data.get_file_summary(repository_id)
+        languages = await self.repo_data.get_languages(repository_id)
+        paths = await self.repo_data.get_file_paths(repository_id)
+        repo = await self.repo_data.get_repository(repository_id)
         repo_name = repo.name if repo else "unknown"
 
         system_prompt = "You are a software architect. Analyze this repository and describe its structure, tech stack, and key components."
@@ -83,11 +80,7 @@ Keep it under 300 words total."""
         }
 
     async def search_code(self, repository_id: UUID, query: str) -> Dict:
-        result = await self.db.execute(
-            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
-        )
-        files = result.scalars().all()
-
+        files = await self.repo_data.get_files(repository_id, limit=settings.BATCH_FILE_LIMIT)
         matches = []
         query_lower = query.lower()
 
@@ -125,7 +118,7 @@ Keep it under 300 words total."""
 
 
 async def get_repository_agent(
-    db: AsyncSession = Depends(get_db_session),
+    repo_data: RepositoryDataService = Depends(get_repository_data_service),
     llm: LLMService = Depends(get_llm_service),
 ) -> RepositoryAgent:
-    return RepositoryAgent(db, llm)
+    return RepositoryAgent(repo_data, llm)

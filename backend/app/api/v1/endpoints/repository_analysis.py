@@ -8,8 +8,24 @@ from app.core.di import get_db_session
 from app.models.user import User
 from app.models.project import Project, Repository
 from app.services.repository_analysis import RepositoryAnalyzer, get_repository_analyzer
+from app.services.repository_data_service import RepositoryDataService, get_repository_data_service
 
 router = APIRouter(prefix="/analyze", tags=["analysis"])
+
+
+async def _verify_repository(repository_id: UUID, current_user: User, db: AsyncSession):
+    result = await db.execute(
+        select(Repository, Project)
+        .join(Project, Repository.project_id == Project.id)
+        .where(Repository.id == repository_id, Project.owner_id == current_user.id)
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Repository not found",
+        )
+    return row
 
 
 @router.post("/{repository_id}")
@@ -19,20 +35,7 @@ async def analyze_repository(
     db: AsyncSession = Depends(get_db_session),
     analyzer: RepositoryAnalyzer = Depends(get_repository_analyzer),
 ):
-    # Verify ownership
-    result = await db.execute(
-        select(Repository, Project)
-        .join(Project, Repository.project_id == Project.id)
-        .where(Repository.id == repository_id, Project.owner_id == current_user.id)
-    )
-    row = result.first()
-
-    if not row:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Repository not found",
-        )
-
+    row = await _verify_repository(repository_id, current_user, db)
     repository, _ = row
 
     if repository.indexing_status != "completed":
@@ -62,27 +65,10 @@ async def get_dependency_graph(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
     analyzer: RepositoryAnalyzer = Depends(get_repository_analyzer),
+    repo_data: RepositoryDataService = Depends(get_repository_data_service),
 ):
-    result = await db.execute(
-        select(Repository, Project)
-        .join(Project, Repository.project_id == Project.id)
-        .where(Repository.id == repository_id, Project.owner_id == current_user.id)
-    )
-    row = result.first()
-
-    if not row:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Repository not found",
-        )
-
-    import sqlalchemy as sa
-    from app.models.project import RepositoryFile
-
-    files_result = await db.execute(
-        sa.select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
-    )
-    files = files_result.scalars().all()
+    await _verify_repository(repository_id, current_user, db)
+    files = await repo_data.get_files(repository_id)
 
     dependencies = []
     for file in files:
@@ -106,27 +92,10 @@ async def get_services(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
     analyzer: RepositoryAnalyzer = Depends(get_repository_analyzer),
+    repo_data: RepositoryDataService = Depends(get_repository_data_service),
 ):
-    result = await db.execute(
-        select(Repository, Project)
-        .join(Project, Repository.project_id == Project.id)
-        .where(Repository.id == repository_id, Project.owner_id == current_user.id)
-    )
-    row = result.first()
-
-    if not row:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Repository not found",
-        )
-
-    import sqlalchemy as sa
-    from app.models.project import RepositoryFile
-
-    files_result = await db.execute(
-        sa.select(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
-    )
-    files = files_result.scalars().all()
+    await _verify_repository(repository_id, current_user, db)
+    files = await repo_data.get_files(repository_id)
 
     file_infos = [
         {"path": f.path, "language": f.language, "content": f.content}

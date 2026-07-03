@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { FileText, Search, BookOpen, Database, GitBranch, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
-import { documentsApi, repositoriesApi, projectsApi, knowledgeAgentApi } from '../lib/api'
+import { FileText, Search, BookOpen, Database, GitBranch, ChevronDown, ChevronUp, Loader2, Brain } from 'lucide-react'
+import { documentsApi, repositoriesApi, projectsApi, knowledgeAgentApi, memoryApi } from '../lib/api'
 import type { Document_, Repository, Project } from '../lib/api'
 
 export function Knowledge() {
@@ -17,6 +17,10 @@ export function Knowledge() {
   const [docChunks, setDocChunks] = useState<Record<string, Record<string, unknown>[]>>({})
   const [repoDocs, setRepoDocs] = useState<Record<string, Record<string, unknown>[]>>({})
   const [loadingChunks, setLoadingChunks] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<'docs' | 'memory'>('docs')
+  const [memSearch, setMemSearch] = useState('')
+  const [memResults, setMemResults] = useState<Record<string, unknown>[] | null>(null)
+  const [memSearching, setMemSearching] = useState(false)
 
   async function load() {
     try {
@@ -161,6 +165,78 @@ export function Knowledge() {
         </div>
       )}
 
+      <div className="border-b border-gray-200 mb-4">
+        <div className="flex gap-4">
+          <button onClick={() => setActiveTab('docs')}
+            className={`pb-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'docs' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+            <FileText className="h-4 w-4 inline mr-1" /> Documents
+          </button>
+          <button onClick={() => setActiveTab('memory')}
+            className={`pb-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'memory' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+            <Brain className="h-4 w-4 inline mr-1" /> Agent Memory
+          </button>
+        </div>
+      </div>
+
+      {activeTab === 'memory' ? (
+        <div className="space-y-4">
+          <div className="rounded-lg border border-gray-200 bg-white p-5 space-y-4">
+            <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+              <Brain className="h-4 w-4" /> Semantic Memory Search
+            </h3>
+            <p className="text-xs text-gray-500">Search past agent results and knowledge stored in semantic memory</p>
+            <div className="flex gap-3">
+              <input type="text" value={memSearch} onChange={e => setMemSearch(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && (async () => {
+                  if (!memSearch.trim()) return
+                  setMemSearching(true)
+                  try {
+                    const res = await memoryApi.searchSemantic(memSearch, 10, 0.3)
+                    setMemResults(res.results)
+                  } catch { setMemResults([]) }
+                  finally { setMemSearching(false) }
+                })()}
+                placeholder="Search agent memory (e.g. 'deployment analysis', 'code review')"
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <button onClick={async () => {
+                if (!memSearch.trim()) return
+                setMemSearching(true)
+                try {
+                  const res = await memoryApi.searchSemantic(memSearch, 10, 0.3)
+                  setMemResults(res.results)
+                } catch { setMemResults([]) }
+                finally { setMemSearching(false) }
+              }} disabled={memSearching || !memSearch.trim()}
+                className="flex items-center gap-1.5 px-4 py-2 bg-purple-600 text-white rounded-md text-sm font-medium hover:bg-purple-700 disabled:opacity-50">
+                {memSearching ? 'Searching...' : 'Search Memory'}
+              </button>
+            </div>
+          </div>
+          {memResults !== null && (
+            <div className="rounded-lg border border-gray-200 bg-white p-5">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-gray-900">Memory Results ({memResults.length})</h3>
+                <button onClick={() => setMemResults(null)} className="text-sm text-gray-400 hover:text-gray-600">Clear</button>
+              </div>
+              {memResults.length === 0 ? (
+                <div className="text-sm text-gray-500">No matching memory entries found.</div>
+              ) : (
+                <div className="space-y-3 max-h-96 overflow-auto">
+                  {memResults.map((r, i) => (
+                    <div key={i} className="border border-gray-200 rounded-lg p-4 hover:border-purple-200 transition-colors">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-medium text-purple-600">{String(r.metadata?.type || 'memory')}</span>
+                        <span className="text-xs text-gray-400">{typeof r.similarity === 'number' ? `${(r.similarity * 100).toFixed(0)}% match` : ''}</span>
+                      </div>
+                      <pre className="text-sm text-gray-700 whitespace-pre-wrap line-clamp-6">{String(r.text || '')}</pre>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="rounded-lg border border-gray-200 bg-white">
           <div className="border-b border-gray-200 px-6 py-4">
@@ -267,6 +343,7 @@ export function Knowledge() {
           )}
         </div>
       </div>
+      )}
     </div>
   )
 }

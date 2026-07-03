@@ -61,6 +61,17 @@ async def get_long_term(
     return {"value": value}
 
 
+@router.get("/semantic")
+async def list_semantic(
+    limit: int = 50,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+    memory: MemorySystem = Depends(get_memory_system),
+):
+    entries = await memory.list_semantic(limit)
+    return {"results": entries, "count": len(entries)}
+
+
 @router.post("/semantic")
 async def store_semantic(
     text: str,
@@ -89,6 +100,42 @@ async def search_semantic(
 ):
     results = await memory.search_semantic(query, limit, threshold)
     return {"results": results, "count": len(results)}
+
+
+@router.post("/conversation/{project_id}")
+async def store_conversation(
+    project_id: UUID,
+    role: str,
+    content: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+    memory: MemorySystem = Depends(get_memory_system),
+):
+    await memory.store_conversation(project_id, current_user.id, role, content)
+    return {"status": "stored"}
+
+
+@router.get("/conversation/{project_id}")
+async def get_conversation(
+    project_id: UUID,
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+    memory: MemorySystem = Depends(get_memory_system),
+):
+    messages = await memory.get_conversation(project_id, current_user.id, limit)
+    return {"messages": messages, "count": len(messages)}
+
+
+@router.delete("/conversation/{project_id}")
+async def clear_conversation(
+    project_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+    memory: MemorySystem = Depends(get_memory_system),
+):
+    await memory.clear_conversation(project_id, current_user.id)
+    return {"status": "cleared"}
 
 
 @router.get("/runs/{run_id}/summary")

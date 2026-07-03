@@ -156,8 +156,6 @@ export const repositoriesApi = {
     api<Repository>('/repositories', { method: 'POST', body: data }),
   ingest: (id: string) =>
     api<{ message: string; repository_id: string }>(`/repositories/${id}/ingest`, { method: 'POST' }),
-  getFiles: (id: string) =>
-    api<RepositoryFile[]>(`/repositories/${id}/files`),
   delete: (id: string) =>
     api<void>(`/repositories/${id}`, { method: 'DELETE' }),
 }
@@ -166,8 +164,6 @@ export const repositoriesApi = {
 export const documentsApi = {
   list: (project_id?: string) =>
     api<Document_[]>('/documents', { params: { project_id } }),
-  get: (id: string) =>
-    api<Record<string, unknown>>(`/documents/${id}`),
   getChunks: (id: string) =>
     api<Record<string, unknown>[]>(`/documents/${id}/chunks`),
 }
@@ -176,6 +172,11 @@ export const documentsApi = {
 export const plannerApi = {
   planAndExecute: (task: string, project_id: string) =>
     api<{ run_id: string }>('/planner/plan', { method: 'POST', body: { task, project_id } }),
+  route: (message: string, project_id: string, repository_id?: string) =>
+    api<RouteResponse>('/planner/route', {
+      method: 'POST',
+      body: { message, project_id, repository_id: repository_id || null },
+    }),
 }
 
 // Repository Agent (understands code, summarizes architecture, searches code)
@@ -195,32 +196,12 @@ export const knowledgeAgentApi = {
       method: 'POST',
       body: { query, project_id: project_id || null, limit: limit || 10 },
     }),
-  hybridSearch: (query: string, project_id?: string, limit?: number) =>
-    api<Record<string, unknown>>('/knowledge/hybrid', {
-      method: 'POST',
-      body: { query, project_id: project_id || null, limit: limit || 10 },
-    }),
-  rankResults: (query: string, results: Record<string, unknown>[]) =>
-    api<{ results: Record<string, unknown>[]; count: number }>('/knowledge/rank', {
-      method: 'POST',
-      body: { query, results },
-    }),
 }
 
 // Incident Agent (analyzes errors and provides recommendations)
 export const incidentAgentApi = {
   analyze: (repository_id: string) =>
     api<Record<string, unknown>>('/incidents/analyze', {
-      method: 'POST',
-      body: { repository_id },
-    }),
-  rootCauseAnalysis: (repository_id: string) =>
-    api<Record<string, unknown>>('/incidents/root-cause', {
-      method: 'POST',
-      body: { repository_id },
-    }),
-  getRecommendations: (repository_id: string) =>
-    api<Record<string, unknown>>('/incidents/recommendations', {
       method: 'POST',
       body: { repository_id },
     }),
@@ -233,32 +214,12 @@ export const docAgentApi = {
       method: 'POST',
       body: { repository_id },
     }),
-  generateApiDocs: (repository_id: string) =>
-    api<Record<string, unknown>>('/docs/api', {
-      method: 'POST',
-      body: { repository_id },
-    }),
-  generateArchitectureDocs: (repository_id: string) =>
-    api<Record<string, unknown>>('/docs/architecture', {
-      method: 'POST',
-      body: { repository_id },
-    }),
 }
 
 // Code Review Agent (reviews PRs and security)
 export const codeReviewApi = {
   reviewPR: (repository_id: string) =>
     api<Record<string, unknown>>('/code-review/pr', {
-      method: 'POST',
-      body: { repository_id },
-    }),
-  securityReview: (repository_id: string) =>
-    api<Record<string, unknown>>('/code-review/security', {
-      method: 'POST',
-      body: { repository_id },
-    }),
-  bestPractices: (repository_id: string) =>
-    api<Record<string, unknown>>('/code-review/best-practices', {
       method: 'POST',
       body: { repository_id },
     }),
@@ -273,15 +234,6 @@ export const deployApi = {
     }),
 }
 
-// Workflow Engine (orchestrates multiple agents)
-export const workflowApi = {
-  execute: (task: string, project_id: string, steps: Record<string, unknown>[]) =>
-    api<{ run_id: string; result: Record<string, unknown> }>('/workflows/execute', {
-      method: 'POST',
-      body: { task, project_id, steps },
-    }),
-}
-
 // Approval Queue (Human-in-the-Loop)
 export const approvalsApi = {
   listPending: () =>
@@ -293,31 +245,10 @@ export const approvalsApi = {
       method: 'POST',
       body: { reason: reason || null },
     }),
-  requestApproval: (run_id: string, action_type: string, action_data: Record<string, unknown>) =>
-    api<Record<string, unknown>>(`/approvals/${run_id}`, {
-      method: 'POST',
-      body: { action_type, action_data },
-    }),
-  getAuditLog: (run_id?: string) =>
-    api<{ audit_log: Record<string, unknown>[]; count: number }>('/approvals/audit', {
-      params: { run_id },
-    }),
 }
 
 // Memory System
 export const memoryApi = {
-  storeLongTerm: (key: string, value: Record<string, unknown>) =>
-    api<{ status: string }>('/memory/long-term', {
-      method: 'POST',
-      body: { key, value },
-    }),
-  getLongTerm: (key: string) =>
-    api<{ value: Record<string, unknown> }>(`/memory/long-term/${key}`),
-  storeSemantic: (text: string, metadata?: Record<string, unknown>) =>
-    api<{ status: string }>('/memory/semantic', {
-      method: 'POST',
-      body: { text, metadata: metadata || {} },
-    }),
   searchSemantic: (query: string, limit?: number, threshold?: number) =>
     api<{ results: Record<string, unknown>[]; count: number }>('/memory/search', {
       method: 'POST',
@@ -325,22 +256,17 @@ export const memoryApi = {
     }),
   getRunMemory: (run_id: string) =>
     api<Record<string, unknown>>(`/memory/runs/${run_id}/summary`),
-}
-
-// MCP Tools
-export const toolsApi = {
-  list: () =>
-    api<{ tools: Record<string, unknown>[]; count: number }>('/tools'),
-  execute: (name: string, args: Record<string, unknown>) =>
-    api<Record<string, unknown>>(`/tools/${name}/execute`, {
-      method: 'POST',
-      body: args,
-    }),
-  getDetails: (name: string) =>
-    api<Record<string, unknown>>(`/tools/${name}`),
+  getConversation: (project_id: string) =>
+    api<{ messages: { role: string; content: string; timestamp: string }[] }>(`/memory/conversation/${project_id}`),
+  clearConversation: (project_id: string) =>
+    api<{ status: string }>(`/memory/conversation/${project_id}`, { method: 'DELETE' }),
 }
 
 // Agent Runs
+export const agentRunsApi = {
+  list: (project_id?: string) =>
+    api<AgentRun[]>('/workflows/runs', { params: { project_id } }),
+}
 
 // Types
 export interface UserInfo {
@@ -398,6 +324,15 @@ export interface Document_ {
   metadata?: Record<string, unknown>
   created_at: string
   updated_at?: string
+}
+
+export interface RouteResponse {
+  response: string
+  execution_plan: { intent: string; required_agents: string[]; needs_approval: boolean; task_description: string }
+  agents_used: string[]
+  agent_details: Record<string, { confidence: number; recommendations: string[]; follow_up_actions: string[] }>
+  needs_approval: boolean
+  planner_fallback: Record<string, unknown> | null
 }
 
 export interface AgentRun {

@@ -9,6 +9,10 @@ from fastapi import Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import pdfplumber
+import markdown
+from markdown.extensions import codehilite, fenced_code, tables, toc
+
 from app.models.document import Document, DocumentChunk
 from app.core.di import get_db_session
 
@@ -21,11 +25,6 @@ class DocumentProcessor:
 
     def load_pdf(self, file_path: str) -> List[Dict]:
         """Load and extract text from PDF file."""
-        try:
-            import pdfplumber
-        except ImportError:
-            raise Exception("pdfplumber not installed. Run: pip install pdfplumber")
-
         chunks = []
         with pdfplumber.open(file_path) as pdf:
             for page_num, page in enumerate(pdf.pages, 1):
@@ -42,12 +41,6 @@ class DocumentProcessor:
 
     def load_markdown(self, file_path: str) -> List[Dict]:
         """Load and parse Markdown file."""
-        try:
-            import markdown
-            from markdown.extensions import codehilite, fenced_code, tables, toc
-        except ImportError:
-            raise Exception("markdown not installed. Run: pip install markdown")
-
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
 

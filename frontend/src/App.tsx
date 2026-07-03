@@ -8,6 +8,7 @@ import { Projects } from './pages/Projects'
 import { Repositories } from './pages/Repositories'
 import { Knowledge } from './pages/Knowledge'
 import { Agents } from './pages/Agents'
+import { Chat } from './pages/Chat'
 import { ApprovalQueue } from './pages/ApprovalQueue'
 import { Settings } from './pages/Settings'
 
@@ -24,6 +25,7 @@ function App() {
           <Route path="/repositories" element={<Repositories />} />
           <Route path="/knowledge" element={<Knowledge />} />
           <Route path="/agents" element={<Agents />} />
+          <Route path="/chat" element={<Chat />} />
           <Route path="/approvals" element={<ApprovalQueue />} />
           <Route path="/settings" element={<Settings />} />
         </Route>

@@ -1,4 +1,5 @@
 import os
+import logging
 from fastapi import Depends
 import httpx
 import asyncio
@@ -6,12 +7,15 @@ from typing import List, Dict, Optional, Any
 from uuid import UUID
 from datetime import datetime
 
-from sqlalchemy import select
+logger = logging.getLogger(__name__)
+
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from pgvector.sqlalchemy import Vector
 
 from app.models.document import Document, DocumentChunk
-from app.models.project import RepositoryFile
+from app.models.memory import SemanticMemory
+from app.models.project import RepositoryFile, Repository
 from app.core.di import get_db_session
 from app.core.config import settings
 
@@ -48,7 +52,7 @@ class EmbeddingService:
                         # Fallback: zero vector
                         embeddings.append([0.0] * self.embedding_dim)
                 except Exception as e:
-                    print(f"Embedding generation failed: {e}")
+                    logger.warning(f"Embedding generation failed: {e}")
                     embeddings.append([0.0] * self.embedding_dim)
 
         return embeddings
@@ -120,10 +124,6 @@ class EmbeddingService:
         embeddings = await self.generate_embeddings(all_chunks)
 
         # Store as document chunks linked to files
-        from app.models.document import Document, DocumentChunk
-
-        # Create a virtual document for this repository
-        from app.models.project import Repository
         doc_result = await self.db.execute(
             select(Document).where(Document.project_id.in_(
                 select(Repository.project_id).where(Repository.id == repository_id)
@@ -179,28 +179,47 @@ class EmbeddingService:
         project_id: Optional[UUID] = None,
         limit: int = 10,
         similarity_threshold: float = 0.7,
+        table_name: str = "document_chunks",
     ) -> List[Dict]:
-        """Perform semantic search using pgvector."""
+        """Perform semantic search using pgvector.
+
+        Args:
+            table_name: "document_chunks" (default, JOIN with documents) or "semantic_memory"
+        """
         query_embedding = (await self.generate_embeddings([query]))[0]
 
         if not query_embedding or len(query_embedding) != self.embedding_dim:
             return []
 
-        # Format embedding as string for pgvector
         emb_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
-        from sqlalchemy import text
+
+        if table_name == "semantic_memory":
+            base_query = f"""
+                SELECT id, text, metadata,
+                       1 - (embedding <=> '{emb_str}'::vector) as similarity
+                FROM semantic_memory
+                WHERE embedding IS NOT NULL
+                    AND 1 - (embedding <=> '{emb_str}'::vector) >= :threshold
+                ORDER BY embedding <=> '{emb_str}'::vector
+                LIMIT :limit
+            """
+            result = await self.db.execute(text(base_query), {"threshold": similarity_threshold, "limit": limit})
+            rows = result.fetchall()
+            return [
+                {
+                    "id": str(row.id),
+                    "text": row.text,
+                    "metadata": row.metadata,
+                    "similarity": float(row.similarity),
+                }
+                for row in rows
+            ]
 
         base_query = f"""
             SELECT
-                dc.id,
-                dc.content,
-                dc.chunk_metadata,
-                dc.chunk_index,
-                dc.token_count,
-                d.id as document_id,
-                d.title as document_title,
-                d.source_type,
-                d.doc_metadata as document_metadata,
+                dc.id, dc.content, dc.chunk_metadata, dc.chunk_index, dc.token_count,
+                d.id as document_id, d.title as document_title,
+                d.source_type, d.doc_metadata as document_metadata,
                 1 - (dc.embedding <=> '{emb_str}'::vector) as similarity
             FROM document_chunks dc
             JOIN documents d ON dc.document_id = d.id
@@ -244,12 +263,34 @@ class EmbeddingService:
         query: str,
         project_id: Optional[UUID] = None,
         limit: int = 10,
-        semantic_weight: float = 0.7,
-        keyword_weight: float = 0.3,
     ) -> List[Dict]:
         """Hybrid search combining semantic and keyword search."""
-        # For now, just semantic search
-        return await self.semantic_search(query, project_id, limit)
+        semantic_results = await self.semantic_search(query, project_id, limit, similarity_threshold=settings.SIMILARITY_THRESHOLD)
+
+        result = await self.db.execute(
+            select(DocumentChunk)
+            .where(DocumentChunk.content.ilike(f"%{query}%"))
+            .limit(limit)
+        )
+        keyword_rows = result.scalars().all()
+
+        combined: Dict[str, Dict] = {}
+        for r in semantic_results:
+            combined[r["chunk_id"]] = r
+
+        for r in keyword_rows:
+            rid = str(r.id)
+            if rid not in combined:
+                combined[rid] = {
+                    "chunk_id": rid,
+                    "content": r.content,
+                    "chunk_index": r.chunk_index,
+                    "token_count": r.token_count,
+                    "similarity": 0.5,
+                }
+
+        ranked = sorted(combined.values(), key=lambda x: x.get("similarity", 0), reverse=True)[:limit]
+        return ranked
 
 
 async def get_embedding_service(db: AsyncSession = Depends(get_db_session)) -> EmbeddingService:

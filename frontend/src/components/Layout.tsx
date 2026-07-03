@@ -1,11 +1,12 @@
 import { Outlet, NavLink, useLocation, useNavigate, Navigate } from 'react-router-dom'
-import { LayoutDashboard, GitBranch, Database, Bot, Settings, LogOut, Menu, X, Shield } from 'lucide-react'
+import { LayoutDashboard, GitBranch, Database, Bot, MessageSquare, Settings, LogOut, Menu, X, Shield } from 'lucide-react'
 import { useState } from 'react'
 import { cn } from '../lib/utils'
 import { useAuth } from '../lib/AuthContext'
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+  { name: 'Chat', href: '/chat', icon: MessageSquare },
   { name: 'Projects', href: '/projects', icon: GitBranch },
   { name: 'Repositories', href: '/repositories', icon: Database },
   { name: 'Knowledge', href: '/knowledge', icon: Bot },

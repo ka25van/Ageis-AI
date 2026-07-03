@@ -121,11 +121,17 @@ UserQuery
 
 -->
 
-PlannerAgent
+Task["Task (TaskSource + TaskType)"]
 
 -->
 
-TaskDecomposition
+EngineeringContext["EngineeringContext
+(root aggregate)"]
+
+-->
+
+PlannerAgent["IntentRouter +
+PlannerAgent"]
 
 -->
 
@@ -173,11 +179,17 @@ User
 
 --> FastAPI
 
---> LangGraph
+--> TaskSource["Task Source Abstractions
+(CHAT / API / WEBHOOK_GITHUB)"]
 
---> AgentRuntime
+--> EngineeringContext["EngineeringContext
+(sub-contexts composed)"]
 
-AgentRuntime --> MCP
+--> Planner["IntentRouter + PlannerAgent"]
+
+Planner --> Agents
+
+Agents --> MCP
 
 MCP --> GitHub
 
@@ -187,11 +199,11 @@ MCP --> AWS
 
 MCP --> PostgreSQL
 
-AgentRuntime --> PostgreSQL
+Agents --> PostgreSQL
 
-AgentRuntime --> pgvector
+Agents --> pgvector
 
-AgentRuntime --> Redis
+Agents --> Redis
 ```
 
 ---
@@ -202,14 +214,15 @@ The platform is composed of the following logical layers:
 
 1. Frontend
 2. Backend API
-3. Authentication
-4. AI Runtime
-5. Workflow Engine
-6. Agent Runtime
-7. Memory Layer
-8. Retrieval Layer
-9. MCP Tool Layer
-10. Infrastructure Integrations
+3. Task Source Abstraction (CHAT, API, WEBHOOK_GITHUB, future comments)
+4. Engineering Context Engine (root aggregate with 8 bounded sub-contexts)
+5. AI Runtime (Planner / IntentRouter)
+6. Workflow Engine
+7. Agent Runtime
+8. Memory Layer (short-term, long-term, semantic)
+9. Retrieval Layer (hybrid search, pgvector)
+10. MCP Tool Layer
+11. Infrastructure Integrations
 
 Each layer is independently replaceable and communicates through clearly defined interfaces.
 
@@ -239,7 +252,9 @@ Each agent contains:
 
 Agents do not communicate directly.
 
-All orchestration is handled by the Workflow Engine.
+All orchestration is handled by the Planner → EngineeringContext pipeline.
+
+Agents receive `ec.project` (ProjectContext) from EngineeringContext — they never construct context themselves.
 
 ---
 
@@ -329,7 +344,68 @@ The Tool Registry communicates with MCP servers.
 
 ---
 
-# 14. Human-in-the-Loop
+# 14. Engineering Context Engine
+
+```mermaid
+flowchart TD
+
+Task["Task (TaskSource + TaskType)"]
+
+--> EngineeringContext
+
+EngineeringContext --> PC["ProjectContext
+(backward compatible)"]
+
+EngineeringContext --> RC["RepositoryContext
+(summary, deps, layers)"]
+
+EngineeringContext --> KC["KnowledgeContext
+(hybrid search results)"]
+
+EngineeringContext --> IC["InfrastructureContext
+(Docker, CI configs)"]
+
+EngineeringContext --> MC["MemoryContext
+(semantic + conversation)"]
+
+EngineeringContext --> EC["ExecutionContext
+(recent run history)"]
+
+EngineeringContext --> WC["WorkflowContext
+(state + approvals)"]
+```
+
+## Principles
+
+* **Composition over inheritance**: EngineeringContext is a root aggregate with 8 bounded sub-contexts — no deep class hierarchies.
+* **Black-box consumption**: Planner never knows how EngineeringContext was built — consumes it as a black box.
+* **Backward compatibility**: All agents continue receiving `ec.project` (ProjectContext) — zero agent files modified.
+* **Extensible**: Adding a new sub-context means one new dataclass + one fetch call in `build_engineering_context()`. Zero Planner/agent changes.
+
+---
+
+# 15. Task Source Abstraction
+
+```mermaid
+flowchart LR
+
+Sources["CHAT | API | WEBHOOK_GITHUB | ..."]
+
+--> Task["Task
+(input, project_id, repository_id, source, type)"]
+
+--> EngineeringContext["EngineeringContext"]
+```
+
+## Principles
+
+* **Single shared model**: All integrations consume the same `Task` dataclass from `backend/app/core/task.py`.
+* **Zero Planner changes per source**: Adding a new source = one new `TaskSource` enum value + one endpoint that creates a `Task`.
+* **Future-ready**: Comments from Jira, PRs from GitHub, alerts from PagerDuty all become `Task` → `EngineeringContext` without refactoring.
+
+---
+
+# 16. Human-in-the-Loop
 
 Potentially destructive actions always require approval.
 
@@ -347,7 +423,7 @@ No external state-changing operation should execute automatically.
 
 ---
 
-# 15. Technology Stack
+# 17. Technology Stack
 
 ### Frontend
 
@@ -385,7 +461,7 @@ No external state-changing operation should execute automatically.
 
 ---
 
-# 16. Development Phases
+# 18. Development Phases
 
 ## Phase 1
 
@@ -503,7 +579,7 @@ Performance
 
 ---
 
-# 17. Project Principles
+# 19. Project Principles
 
 * Local-first AI
 * Modular Architecture
@@ -518,7 +594,7 @@ Performance
 
 ---
 
-# 18. Repository Structure
+# 20. Repository Structure
 
 ```text
 backend/
@@ -533,7 +609,7 @@ AGENTS.md
 
 ---
 
-# 19. Future Roadmap
+# 21. Future Roadmap
 
 * GraphRAG
 * Neo4j
@@ -550,7 +626,7 @@ AGENTS.md
 
 ---
 
-# 20. Definition of Success
+# 22. Definition of Success
 
 Aegis AI should demonstrate:
 

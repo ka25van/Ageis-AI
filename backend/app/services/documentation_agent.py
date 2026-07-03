@@ -2,41 +2,47 @@ from typing import Dict, List
 from uuid import UUID
 
 from fastapi import Depends
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.project import RepositoryFile, Repository
 from app.services.llm_service import LLMService, get_llm_service
+from app.services.repository_data_service import RepositoryDataService, get_repository_data_service
+from app.services.agent_base import AgentResult
+from app.services.context_builder import ProjectContext
 from app.core.di import get_db_session
 
 
 class DocumentationAgent:
-    def __init__(self, db: AsyncSession, llm: LLMService):
-        self.db = db
+    def __init__(self, repo_data: RepositoryDataService, llm: LLMService):
+        self.repo_data = repo_data
         self.llm = llm
 
-    def _build_file_context(self, files: list, max_files: int = 30) -> str:
+    async def process(self, context: ProjectContext) -> AgentResult:
+        result = await self.generate_readme(context.project_id)
+        result_text = result.get("readme", json.dumps(result))
+        return AgentResult(
+            result=result_text,
+            confidence=0.8,
+            recommendations=["Generate API documentation", "Generate architecture documentation"],
+            follow_up_actions=["Review README", "Add setup instructions"],
+            details=result,
+        )
+
+    @staticmethod
+    def _build_file_context(files: list, max_files: int = 30) -> str:
         lines = []
         for f in files[:max_files]:
-            lang = f.language or "unknown"
-            content = (f.content or "")[:500]
+            lang = getattr(f, "language", None) or "unknown"
+            content = (getattr(f, "content", None) or "")[:500]
             lines.append(f"## {f.path} [{lang}]\n```\n{content}\n```")
         return "\n\n".join(lines)
 
     async def generate_readme(self, repository_id: UUID) -> Dict:
-        result = await self.db.execute(
-            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id).limit(200)
-        )
-        files = result.scalars().all()
-
-        repo_result = await self.db.execute(
-            select(Repository).where(Repository.id == repository_id)
-        )
-        repo = repo_result.scalar_one_or_none()
+        files = await self.repo_data.get_files(repository_id)
+        repo = await self.repo_data.get_repository(repository_id)
         repo_name = repo.name if repo else "repository"
 
-        languages = list(set(f.language for f in files if f.language))
-        paths = [f.path for f in files]
+        languages = await self.repo_data.get_languages(repository_id)
+        paths = await self.repo_data.get_file_paths(repository_id)
         file_context = self._build_file_context(files)
 
         system_prompt = """You are a technical documentation expert. Generate a comprehensive README.md for this repository.
@@ -61,11 +67,7 @@ Key file contents:
         }
 
     async def generate_api_documentation(self, repository_id: UUID) -> Dict:
-        result = await self.db.execute(
-            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id).limit(200)
-        )
-        files = result.scalars().all()
-
+        files = await self.repo_data.get_files(repository_id)
         api_files = [f for f in files if f.content and any(
             kw in f.content.lower() for kw in ["router", "route", "endpoint", "api", "flask", "django", "fastapi", "controller"]
         )]
@@ -87,14 +89,10 @@ Use proper markdown formatting."""
         }
 
     async def generate_architecture_documentation(self, repository_id: UUID) -> Dict:
-        result = await self.db.execute(
-            select(RepositoryFile).where(RepositoryFile.repository_id == repository_id).limit(200)
-        )
-        files = result.scalars().all()
-
+        files = await self.repo_data.get_files(repository_id)
         file_context = self._build_file_context(files)
-        paths = [f.path for f in files]
-        languages = list(set(f.language for f in files if f.language))
+        paths = await self.repo_data.get_file_paths(repository_id)
+        languages = await self.repo_data.get_languages(repository_id)
 
         system_prompt = """You are a software architect. Generate detailed architecture documentation.
 Analyze the directory structure, file organization, dependency flow, and component relationships.
@@ -119,7 +117,7 @@ Key file contents:
 
 
 async def get_documentation_agent(
-    db: AsyncSession = Depends(get_db_session),
+    repo_data: RepositoryDataService = Depends(get_repository_data_service),
     llm: LLMService = Depends(get_llm_service),
 ) -> DocumentationAgent:
-    return DocumentationAgent(db, llm)
+    return DocumentationAgent(repo_data, llm)
