@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { CheckCircle, XCircle, Clock, AlertCircle, Loader2 } from 'lucide-react'
-import { approvalsApi } from '../lib/api'
+import { CheckCircle, XCircle, Clock, AlertCircle, Loader2, ExternalLink } from 'lucide-react'
+import { approvalsApi, plannerApi } from '../lib/api'
 
 interface ApprovalItem {
   id: string
@@ -17,6 +17,7 @@ export function ApprovalQueue() {
   const [actionId, setActionId] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState('')
   const [rejectingId, setRejectingId] = useState<string | null>(null)
+  const [execResult, setExecResult] = useState<{ run_id: string; response: string } | null>(null)
 
   async function load() {
     try {
@@ -28,10 +29,14 @@ export function ApprovalQueue() {
 
   useEffect(() => { load() }, [])
 
-  async function handleApprove(id: string) {
-    setActionId(id)
+  async function handleApprove(item: ApprovalItem) {
+    setActionId(item.id)
+    setExecResult(null)
     try {
-      await approvalsApi.approve(id)
+      await approvalsApi.approve(item.id)
+      // Execute the approved action
+      const result = await plannerApi.resume(item.run_id)
+      setExecResult({ run_id: item.run_id, response: result.response })
       await load()
     } catch { /* empty */ }
     finally { setActionId(null) }
@@ -84,12 +89,12 @@ export function ApprovalQueue() {
               )}
               <div className="flex items-center gap-3">
                 <button
-                  onClick={() => handleApprove(a.id)}
+                  onClick={() => handleApprove(a)}
                   disabled={actionId === a.id}
                   className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 disabled:opacity-50"
                 >
                   {actionId === a.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
-                  Approve
+                  Approve & Execute
                 </button>
                 <button
                   onClick={() => setRejectingId(rejectingId === a.id ? null : a.id)}
@@ -119,6 +124,16 @@ export function ApprovalQueue() {
               )}
             </div>
           ))}
+        </div>
+      )}
+      {execResult && (
+        <div className="rounded-lg border border-green-200 bg-green-50 p-5">
+          <div className="flex items-center gap-2 mb-2">
+            <CheckCircle className="h-5 w-5 text-green-600" />
+            <h3 className="font-medium text-green-800">Action Executed</h3>
+          </div>
+          <p className="text-sm text-gray-700 whitespace-pre-wrap">{execResult.response.slice(0, 2000)}</p>
+          <p className="text-xs text-gray-400 mt-2">Run ID: {execResult.run_id}</p>
         </div>
       )}
     </div>

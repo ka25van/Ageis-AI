@@ -67,16 +67,6 @@ export function Chat() {
           agents_used: data.agents_used,
         },
       ])
-
-      if (data.needs_approval) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: 'assistant',
-            content: '⚠️ This action requires approval. Please check the Approvals page.',
-          },
-        ])
-      }
     } catch (err) {
       setMessages((prev) => [
         ...prev,

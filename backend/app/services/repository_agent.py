@@ -18,9 +18,10 @@ class RepositoryAgent:
         self.repo_data = repo_data
         self.llm = llm
 
-    async def process(self, context: ProjectContext) -> AgentResult:
+    async def process(self, context: ProjectContext, repository_id: UUID = None) -> AgentResult:
         """Entry point for ContextBuilder-driven execution."""
-        analysis = await self.understand_code(context.project_id)
+        rid = repository_id or context.project_id
+        analysis = await self.understand_code(rid)
         result_text = analysis.get("analysis", json.dumps(analysis))
         return AgentResult(
             result=result_text,

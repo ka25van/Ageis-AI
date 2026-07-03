@@ -89,6 +89,7 @@ class ProjectContext:
     semantic_memory: List[Dict] = field(default_factory=list)
     workflow_state: Dict = field(default_factory=dict)
     task_description: str = ""
+    step_input: Dict = field(default_factory=dict)
 
 
 # Configurable truncation limits

@@ -177,6 +177,8 @@ export const plannerApi = {
       method: 'POST',
       body: { message, project_id, repository_id: repository_id || null },
     }),
+  resume: (run_id: string) =>
+    api<RouteResponse>(`/planner/resume/${run_id}`, { method: 'POST' }),
 }
 
 // Repository Agent (understands code, summarizes architecture, searches code)
@@ -332,6 +334,8 @@ export interface RouteResponse {
   agents_used: string[]
   agent_details: Record<string, { confidence: number; recommendations: string[]; follow_up_actions: string[] }>
   needs_approval: boolean
+  approval_id?: string
+  run_id?: string
   planner_fallback: Record<string, unknown> | null
 }
 

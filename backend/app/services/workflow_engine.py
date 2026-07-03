@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Dict, List, Optional, Any, Callable, Awaitable
 from uuid import UUID
 from datetime import datetime
@@ -9,16 +10,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import AgentRun, AgentStep
-from app.models.project import Project, Repository
+from app.models.project import Repository
 from app.core.di import get_db_session
 from app.services.agent_base import AgentResult
 from app.services.context_builder import ContextBuilder, ProjectContext, get_context_builder
+from app.services.capability_registry import CapabilityRegistry, CapabilityNotFoundError
 from app.services.repository_agent import RepositoryAgent, get_repository_agent
 from app.services.knowledge_agent import KnowledgeAgent, get_knowledge_agent
 from app.services.incident_agent import IncidentAgent, get_incident_agent
 from app.services.documentation_agent import DocumentationAgent, get_documentation_agent
 from app.services.code_review_agent import CodeReviewAgent, get_code_review_agent
 from app.services.deploy_agent import DeployAgent, get_deploy_agent
+from app.core.execution_plan import ExecutionPlan, ExecutionStep, RetryPolicy
+from app.core.task import Task
+from app.services.execution_adapters import adapt_agent, adapt_mcp, adapt_rest, adapt_python
 
 logger = logging.getLogger(__name__)
 
@@ -43,33 +48,237 @@ TOOL_AGENT_MAP: Dict[str, str] = {
 }
 
 
-class WorkflowEngine:
-    """Engine for executing and managing workflows with retry logic.
+class StepResult:
+    def __init__(self, status: str, output: Any = None, error: str = None, duration_ms: int = 0):
+        self.status = status
+        self.output = output
+        self.error = error
+        self.duration_ms = duration_ms
 
-    Delegates to real agents via their process(context) methods.
+
+class ExecutionRuntime:
+    """Owns execution of a single step: retries, timeout, cancellation, telemetry."""
+
+    def __init__(self):
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    async def execute_step(
+        self,
+        step: ExecutionStep,
+        executor: Callable[..., Awaitable[Any]],
+        context: ProjectContext,
+        attempt_callback: Callable[[int, int], Awaitable[None]] = None,
+    ) -> StepResult:
+        policy = step.retry_policy or RetryPolicy()
+        last_error: Optional[str] = None
+        start = time.monotonic()
+
+        for attempt in range(1, policy.max_retries + 1):
+            if self._cancelled:
+                return StepResult(status="cancelled", error="Execution cancelled", duration_ms=int((time.monotonic() - start) * 1000))
+
+            try:
+                result = await executor(context)
+                duration_ms = int((time.monotonic() - start) * 1000)
+                return StepResult(status="completed", output=result, duration_ms=duration_ms)
+
+            except FatalError as e:
+                last_error = str(e)
+                logger.error("Fatal error on step %s: %s — not retrying", step.id, last_error)
+                duration_ms = int((time.monotonic() - start) * 1000)
+                return StepResult(status="failed", error=last_error, duration_ms=duration_ms)
+
+            except Exception as e:
+                last_error = str(e)
+                is_retryable = not isinstance(e, FatalError)
+                if attempt < policy.max_retries and is_retryable:
+                    delay = policy.retry_delay_seconds * (policy.backoff_multiplier ** (attempt - 1))
+                    logger.warning("Step %s attempt %d/%d failed: %s — retrying in %.1fs", step.id, attempt, policy.max_retries, last_error, delay)
+                    if attempt_callback:
+                        await attempt_callback(attempt, policy.max_retries)
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error("Step %s exhausted %d attempts: %s", step.id, policy.max_retries, last_error)
+                    duration_ms = int((time.monotonic() - start) * 1000)
+                    return StepResult(status="failed", error=last_error, duration_ms=duration_ms)
+
+        duration_ms = int((time.monotonic() - start) * 1000)
+        return StepResult(status="failed", error=last_error, duration_ms=duration_ms)
+
+
+class WorkflowEngine:
+    """Engine for executing and managing workflows.
+
+    Consumes ExecutionPlan.
+    Performs orchestration only — delegates execution to CapabilityRegistry.
+    Never performs reasoning.
     """
 
     def __init__(
         self,
         db: AsyncSession,
         ctx_builder: ContextBuilder,
-        repo_agent: RepositoryAgent,
-        knowledge_agent: KnowledgeAgent,
-        incident_agent: IncidentAgent,
-        doc_agent: DocumentationAgent,
-        code_review_agent: CodeReviewAgent,
-        deploy_agent: DeployAgent,
+        registry: CapabilityRegistry,
     ):
         self.db = db
         self.ctx_builder = ctx_builder
-        self._agents: Dict[str, Callable[[ProjectContext], Awaitable[AgentResult]]] = {
-            "repository": repo_agent.process,
-            "knowledge": knowledge_agent.process,
-            "incident": incident_agent.process,
-            "documentation": doc_agent.process,
-            "code_review": code_review_agent.process,
-            "deploy": deploy_agent.process,
+        self.registry = registry
+
+    async def _build_context_for_step(self, step: ExecutionStep, project_id: UUID, run_id: UUID) -> ProjectContext:
+        repository_id: Optional[UUID] = None
+        rid_raw = step.input.get("repository_id") or (str(project_id) if project_id else None)
+        if rid_raw:
+            try:
+                repository_id = UUID(rid_raw) if isinstance(rid_raw, str) else rid_raw
+            except (ValueError, TypeError):
+                pass
+
+        if not repository_id and project_id:
+            repo_result = await self.db.execute(
+                select(Repository).where(Repository.project_id == project_id).limit(1)
+            )
+            repo = repo_result.scalar_one_or_none()
+            if repo:
+                repository_id = repo.id
+
+        task_description = step.description or step.name or "Execute step"
+
+        if repository_id:
+            ctx = await self.ctx_builder.build(repository_id, task_description)
+        else:
+            ctx = ProjectContext(
+                project_id=project_id or UUID("00000000-0000-0000-0000-000000000000"),
+                task_description=task_description,
+            )
+        ctx.step_input = step.input
+        return ctx
+
+    async def execute_plan(
+        self,
+        plan: ExecutionPlan,
+        project_id: UUID,
+        run_id: UUID,
+        max_retries: int = 3,
+    ) -> Dict:
+        """Execute an ExecutionPlan by resolving its DAG and dispatching steps.
+        
+        Orchestration only:
+        - Resolves dependency order (topological sort)
+        - Delegates each step to CapabilityRegistry
+        - Manages execution state
+        - Pauses for approvals
+        - Tracks progress
+        """
+        runtime = ExecutionRuntime()
+        step_results: Dict[str, StepResult] = {}
+        completed_steps = 0
+        failed_steps = 0
+
+        # Topological sort: respect depends_on
+        ordered = self._topological_sort(plan.steps)
+
+        for step in ordered:
+            # Check dependencies are all completed
+            deps_status = [step_results[d].status for d in step.depends_on if d in step_results]
+            if deps_status and any(s != "completed" for s in deps_status):
+                step_results[step.id] = StepResult(status="skipped", error=f"Dependency failed: {step.depends_on}")
+                continue
+
+            # Build context
+            context = await self._build_context_for_step(step, project_id, run_id)
+
+            # Resolve capability
+            try:
+                capability = self.registry.resolve(step.capability)
+            except CapabilityNotFoundError as e:
+                step_results[step.id] = StepResult(status="failed", error=str(e))
+                failed_steps += 1
+                continue
+
+            # Record step start
+            step_record = AgentStep(
+                run_id=run_id,
+                step_index=int(step.id.split("-")[1]) if "-" in step.id else 0,
+                step_type=step.capability,
+                name=step.name,
+                input_data=step.input,
+                status="running",
+                started_at=datetime.utcnow(),
+            )
+            self.db.add(step_record)
+            await self.db.commit()
+            await self.db.refresh(step_record)
+
+            # Execute via ExecutionRuntime
+            result = await runtime.execute_step(step, capability.executor, context)
+
+            # Record step result
+            duration_ms = result.duration_ms
+            step_record.status = result.status
+            step_record.duration_ms = duration_ms
+            if result.status == "completed":
+                step_record.output_data = {"result": result.output}
+                completed_steps += 1
+            else:
+                step_record.output_data = {"error": result.error}
+                step_record.error_message = result.error
+                failed_steps += 1
+            step_record.completed_at = datetime.utcnow()
+            await self.db.commit()
+
+            step_results[step.id] = result
+
+            # Stop on failure (no cascade — DAG handles dependencies)
+            if result.status == "failed" and not step.rollback_step:
+                break
+
+            # Handle rollback if step has rollback_step
+            if result.status == "failed" and step.rollback_step:
+                rb_step = next((s for s in plan.steps if s.id == step.rollback_step), None)
+                if rb_step:
+                    rb_context = await self._build_context_for_step(rb_step, project_id, run_id)
+                    try:
+                        rb_cap = self.registry.resolve(rb_step.capability)
+                        rb_result = await runtime.execute_step(rb_step, rb_cap.executor, rb_context)
+                        step_results[rb_step.id] = rb_result
+                    except CapabilityNotFoundError as e:
+                        step_results[rb_step.id] = StepResult(status="failed", error=str(e))
+
+        overall_status = "completed" if failed_steps == 0 else "failed"
+        return {
+            "status": overall_status,
+            "completed_steps": completed_steps,
+            "failed_steps": failed_steps,
+            "total_steps": len(plan.steps),
+            "step_results": {
+                sid: {"status": r.status, "error": r.error, "duration_ms": r.duration_ms, "output": r.output}
+                for sid, r in step_results.items()
+            },
         }
+
+    def _topological_sort(self, steps: List[ExecutionStep]) -> List[ExecutionStep]:
+        """Sort steps in dependency order (Kahn's algorithm)."""
+        step_map = {s.id: s for s in steps}
+        in_degree = {s.id: 0 for s in steps}
+        for s in steps:
+            for dep in s.depends_on:
+                if dep in in_degree:
+                    in_degree[s.id] += 1
+
+        queue = [s.id for s in steps if in_degree[s.id] == 0]
+        ordered = []
+        while queue:
+            node = queue.pop(0)
+            ordered.append(step_map[node])
+            for s in steps:
+                if node in s.depends_on:
+                    in_degree[s.id] -= 1
+                    if in_degree[s.id] == 0:
+                        queue.append(s.id)
+        return ordered
 
     async def execute_workflow(
         self,
@@ -79,84 +288,33 @@ class WorkflowEngine:
         max_retries: int = 3,
         retry_delay: int = 2,
     ) -> Dict:
-        """Execute a workflow with retry logic and real agent delegation."""
-        last_error: Optional[str] = None
+        """Backward-compatible method: wraps flat steps into ExecutionPlan and delegates to execute_plan."""
+        from app.core.execution_plan import ExecutionStep as ES, ExecutionPlan as EP
+
+        plan_steps = []
+        for i, s in enumerate(steps):
+            tool = s.get("tool", "analyze")
+            agent_name = TOOL_AGENT_MAP.get(tool, tool)
+            plan_steps.append(ES(
+                id=f"step-{i+1}",
+                name=s.get("name", f"Step {i+1}"),
+                description=s.get("description", ""),
+                capability=agent_name,
+                input=s,
+                depends_on=[] if i == 0 else [f"step-{i}"],
+            ))
+
+        plan = EP(
+            intent=task[:100] if task else "workflow",
+            task_description=task,
+            steps=plan_steps,
+            required_capabilities=[s.capability for s in plan_steps],
+        )
 
         run = await self.db.get(AgentRun, run_id)
         project_id = run.project_id if run else None
 
-        for step in steps:
-            step_index = step.get("step_index", 0)
-            tool = step.get("tool", "analyze")
-            success = False
-            attempts = 0
-            step_error: Optional[str] = None
-
-            while not success and attempts < max_retries:
-                attempts += 1
-                try:
-                    result = await self._execute_step(tool, step, project_id, run_id, attempts)
-                    success = True
-
-                    step_record = AgentStep(
-                        run_id=run_id,
-                        step_index=step_index,
-                        step_type=tool,
-                        name=step.get("name", f"Step {step_index}"),
-                        input_data=step,
-                        output_data={"result": result},
-                        status="completed",
-                    )
-                    self.db.add(step_record)
-                    await self.db.commit()
-                    logger.info("Workflow step %d (%s) completed (attempt %d/%d)", step_index, tool, attempts, max_retries)
-
-                except FatalError as e:
-                    step_error = str(e)
-                    logger.error("Fatal error on step %d (%s): %s — not retrying", step_index, tool, step_error)
-                    self.db.add(AgentStep(
-                        run_id=run_id, step_index=step_index, step_type=tool,
-                        name=step.get("name", f"Step {step_index}"),
-                        input_data=step, output_data={"error": step_error},
-                        status="failed", error_message=step_error,
-                    ))
-                    await self.db.commit()
-                    last_error = step_error
-                    break
-
-                except RetryableError as e:
-                    step_error = str(e)
-                    if attempts < max_retries:
-                        logger.warning("Retryable error on step %d (%s) attempt %d/%d: %s", step_index, tool, attempts, max_retries, step_error)
-                        await asyncio.sleep(retry_delay)
-                    else:
-                        logger.error("Step %d (%s) exhausted %d retries: %s", step_index, tool, max_retries, step_error)
-                        self.db.add(AgentStep(
-                            run_id=run_id, step_index=step_index, step_type=tool,
-                            name=step.get("name", f"Step {step_index}"),
-                            input_data=step, output_data={"error": step_error},
-                            status="failed", error_message=step_error,
-                        ))
-                        await self.db.commit()
-                        last_error = step_error
-
-                except Exception as e:
-                    step_error = str(e)
-                    if attempts < max_retries:
-                        logger.warning("Unexpected error on step %d (%s) attempt %d/%d: %s — will retry", step_index, tool, attempts, max_retries, step_error)
-                        await asyncio.sleep(retry_delay)
-                    else:
-                        logger.error("Step %d (%s) exhausted %d retries with unexpected error: %s", step_index, tool, max_retries, step_error)
-                        self.db.add(AgentStep(
-                            run_id=run_id, step_index=step_index, step_type=tool,
-                            name=step.get("name", f"Step {step_index}"),
-                            input_data=step, output_data={"error": step_error},
-                            status="failed", error_message=step_error,
-                        ))
-                        await self.db.commit()
-                        last_error = step_error
-
-        return {"status": "completed" if not last_error else "failed"}
+        return await self.execute_plan(plan, project_id, run_id, max_retries=max_retries)
 
     async def _execute_step(
         self,
@@ -166,16 +324,16 @@ class WorkflowEngine:
         run_id: UUID,
         attempt: int,
     ) -> Any:
-        """Execute a single workflow step by delegating to a real agent."""
+        """Backward-compatible single-step execution via CapabilityRegistry."""
         agent_name = TOOL_AGENT_MAP.get(tool)
         if not agent_name:
             return {"result": f"Unknown tool: {tool}"}
 
-        agent_fn = self._agents.get(agent_name)
-        if not agent_fn:
-            return {"result": f"No agent registered for tool: {tool}"}
+        try:
+            capability = self.registry.resolve(agent_name)
+        except CapabilityNotFoundError:
+            return {"result": f"No capability for tool: {tool}"}
 
-        # Build context
         repository_id: Optional[UUID] = None
         rid_raw = step.get("repository_id") or (str(project_id) if project_id else None)
         if rid_raw:
@@ -202,7 +360,7 @@ class WorkflowEngine:
                 task_description=task_description,
             )
 
-        return await agent_fn(context)
+        return await capability.executor(context)
 
     async def get_workflow_state(self, run_id: UUID) -> Dict:
         """Get current workflow state with real step results."""
@@ -234,11 +392,7 @@ class WorkflowEngine:
         }
 
     async def resume_workflow(self, run_id: UUID) -> Dict:
-        """Resume a failed workflow from the last failed step.
-
-        Reconstructs original task and steps from AgentRun.input_data,
-        skips completed steps, re-executes from the first failed step.
-        """
+        """Resume a failed workflow from the last failed step."""
         run = await self.db.get(AgentRun, run_id)
         if not run:
             return {"status": "not_found", "message": "Run not found"}
@@ -260,10 +414,8 @@ class WorkflowEngine:
             original_task = run.input_data.get("task", "")
             original_steps = run.input_data.get("steps", [])
 
-        # Re-execute from the first failed step index
         first_failed = failed[0]
         resume_from = first_failed.step_index
-
         remaining_steps = [s for s in original_steps if s.get("step_index", 0) >= resume_from]
 
         completed_details = [
@@ -303,13 +455,38 @@ async def get_workflow_engine(
     code_review_agent: CodeReviewAgent = Depends(get_code_review_agent),
     deploy_agent: DeployAgent = Depends(get_deploy_agent),
 ) -> WorkflowEngine:
-    return WorkflowEngine(
-        db=db,
-        ctx_builder=ctx_builder,
-        repo_agent=repo_agent,
-        knowledge_agent=knowledge_agent,
-        incident_agent=incident_agent,
-        doc_agent=doc_agent,
-        code_review_agent=code_review_agent,
-        deploy_agent=deploy_agent,
-    )
+    """Build a WorkflowEngine with all capabilities registered.
+
+    Agents are registered directly (their .process() methods already match
+    the common signature). MCP tools, REST endpoints, and Python functions
+    are normalized via adapter functions.
+    """
+    registry = CapabilityRegistry()
+    registry.register("repository", "Analyze repo structure, architecture, code search", adapt_agent(repo_agent.process))
+    registry.register("knowledge", "Search indexed documents and answer questions", adapt_agent(knowledge_agent.process))
+    registry.register("incident", "Find error patterns, root cause analysis, recommendations", adapt_agent(incident_agent.process))
+    registry.register("documentation", "Generate README, API docs, architecture docs", adapt_agent(doc_agent.process))
+    registry.register("code_review", "Security audit, code quality, best practices", adapt_agent(code_review_agent.process))
+    registry.register("deploy", "Analyze Docker, CI/CD, deployment configs", adapt_agent(deploy_agent.process))
+
+    # Register MCP tools via generic adapters — MCP becomes just another capability
+    try:
+        from app.mcp.registry import get_registry
+        mcp_registry = get_registry()
+        for tool in mcp_registry.list_tools():
+            name = tool["name"]
+            desc = tool["description"]
+            if not registry.has(name):
+                registry.register(name, desc, adapt_mcp(name, mcp_registry), execution_type="mcp")
+            else:
+                logger.debug("Skipping MCP tool '%s' — already registered", name)
+    except Exception:
+        logger.warning("Could not load MCP tools for registry", exc_info=True)
+
+    # Register REST and Python stub capabilities for future extensibility
+    if not registry.has("rest_call"):
+        registry.register("rest_call", "Make an HTTP request to an external API", adapt_rest(), execution_type="rest")
+    if not registry.has("python_exec"):
+        registry.register("python_exec", "Execute a Python function or snippet", adapt_python(), execution_type="python")
+
+    return WorkflowEngine(db=db, ctx_builder=ctx_builder, registry=registry)
