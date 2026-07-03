@@ -38,5 +38,5 @@ async def analyze_deployment(
     if repo.indexing_status != "completed":
         raise HTTPException(status_code=400, detail=f"Repository not indexed (status: {repo.indexing_status})")
 
-    analysis = await agent.analyze_deployment(rid)
+    analysis = await agent.analyze_deployment(rid, current_user.id)
     return analysis

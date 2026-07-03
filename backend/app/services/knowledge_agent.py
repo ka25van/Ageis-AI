@@ -9,18 +9,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.document import Document, DocumentChunk
 from app.services.embeddings import EmbeddingService, get_embedding_service
 from app.services.llm_service import LLMService, get_llm_service
+from app.services.memory import MemorySystem, get_memory_system
 from app.core.di import get_db_session
 
 
 class KnowledgeAgent:
-    def __init__(self, db: AsyncSession, embedding_service: EmbeddingService, llm: LLMService):
+    def __init__(self, db: AsyncSession, embedding_service: EmbeddingService, llm: LLMService, memory: Optional[MemorySystem] = None):
         self.db = db
         self.embeddings = embedding_service
         self.llm = llm
+        self.memory = memory
 
     async def retrieve_knowledge(self, query: str, project_id: UUID = None, limit: int = 10) -> Dict:
         embedding = await self.embeddings.generate_embeddings([query])
-
         if not embedding or not embedding[0]:
             return {"results": [], "count": 0}
 
@@ -104,40 +105,56 @@ class KnowledgeAgent:
     async def rank_results(self, results: List[Dict], query: str) -> List[Dict]:
         query_lower = query.lower()
         query_words = query_lower.split()
-
         for r in results:
             content = r.get("content", "")
             content_lower = content.lower()
             word_matches = sum(1 for w in query_words if w in content_lower)
             r["relevance_score"] = (r.get("similarity", 0) * 0.7) + (word_matches / len(content.split()) if content else 0)
-
         return sorted(results, key=lambda x: x.get("relevance_score", 0), reverse=True)
 
     async def query(self, question: str, project_id: UUID = None) -> Dict:
         search_results = await self.hybrid_search(question, project_id, limit=5)
-        if not search_results["results"]:
-            return {
-                "answer": "I don't have enough information in the indexed documents to answer that.",
-                "sources": [],
-            }
-
         context_parts = []
+
+        # Include memory context
+        memory_context = ""
+        if self.memory:
+            mem_results = await self.memory.search_semantic(question, limit=3, threshold=0.3)
+            if mem_results:
+                mem_texts = [r.get("text", "") for r in mem_results if r.get("text")]
+                if mem_texts:
+                    memory_context = "\nRelated past knowledge:\n" + "\n---\n".join(mem_texts[:2000])
+
+        if not search_results["results"] and not memory_context:
+            return {"answer": "I don't have enough information in the indexed documents to answer that.", "sources": []}
+
         for r in search_results["results"]:
             title = r.get("document_title", "Unknown")
             content = r.get("content", "")
             context_parts.append(f"[Source: {title}]\n{content}")
 
-        context = "\n\n---\n\n".join(context_parts)
-        system_prompt = "You are a helpful assistant. Answer the question using only the provided context."
-        user_prompt = f"Question: {question}\n\nRelevant context:\n{context[:6000]}"
-        answer = await self.llm.generate(system_prompt, user_prompt)
+        context = "\n\n---\n\n".join(context_parts) + memory_context
+        answer = await self.llm.generate(
+            "You are a helpful assistant. Answer the question using only the provided context.",
+            f"Question: {question}\n\nRelevant context:\n{context[:6000]}",
+        )
+
+        # Store Q&A in semantic memory
+        if self.memory:
+            try:
+                emb = (await self.memory.embeddings.generate_embeddings([question]))[0]
+                if emb:
+                    await self.memory.store_semantic(
+                        text=f"Q: {question}\nA: {answer[:500]}",
+                        embedding=emb,
+                        metadata={"type": "qa", "sources": len(search_results["results"])},
+                    )
+            except Exception:
+                pass
 
         return {
             "answer": answer,
-            "sources": [
-                {"title": r.get("document_title"), "similarity": r.get("similarity")}
-                for r in search_results["results"][:5]
-            ],
+            "sources": [{"title": r.get("document_title"), "similarity": r.get("similarity")} for r in search_results["results"][:5]],
         }
 
 
@@ -145,5 +162,6 @@ async def get_knowledge_agent(
     db: AsyncSession = Depends(get_db_session),
     embedding_service: EmbeddingService = Depends(get_embedding_service),
     llm: LLMService = Depends(get_llm_service),
+    memory: Optional[MemorySystem] = Depends(get_memory_system),
 ) -> KnowledgeAgent:
-    return KnowledgeAgent(db, embedding_service, llm)
+    return KnowledgeAgent(db, embedding_service, llm, memory=memory)

@@ -282,11 +282,65 @@ export const workflowApi = {
     }),
 }
 
-// Agent Runs
-export const agentRunsApi = {
-  list: (project_id?: string) =>
-    api<AgentRun[]>('/workflows/runs', { params: { project_id } }),
+// Approval Queue (Human-in-the-Loop)
+export const approvalsApi = {
+  listPending: () =>
+    api<{ approvals: Record<string, unknown>[]; count: number }>('/approvals/pending'),
+  approve: (id: string) =>
+    api<{ status: string; id: string }>(`/approvals/${id}/approve`, { method: 'POST' }),
+  reject: (id: string, reason?: string) =>
+    api<{ status: string; id: string; reason?: string }>(`/approvals/${id}/reject`, {
+      method: 'POST',
+      body: { reason: reason || null },
+    }),
+  requestApproval: (run_id: string, action_type: string, action_data: Record<string, unknown>) =>
+    api<Record<string, unknown>>(`/approvals/${run_id}`, {
+      method: 'POST',
+      body: { action_type, action_data },
+    }),
+  getAuditLog: (run_id?: string) =>
+    api<{ audit_log: Record<string, unknown>[]; count: number }>('/approvals/audit', {
+      params: { run_id },
+    }),
 }
+
+// Memory System
+export const memoryApi = {
+  storeLongTerm: (key: string, value: Record<string, unknown>) =>
+    api<{ status: string }>('/memory/long-term', {
+      method: 'POST',
+      body: { key, value },
+    }),
+  getLongTerm: (key: string) =>
+    api<{ value: Record<string, unknown> }>(`/memory/long-term/${key}`),
+  storeSemantic: (text: string, metadata?: Record<string, unknown>) =>
+    api<{ status: string }>('/memory/semantic', {
+      method: 'POST',
+      body: { text, metadata: metadata || {} },
+    }),
+  searchSemantic: (query: string, limit?: number, threshold?: number) =>
+    api<{ results: Record<string, unknown>[]; count: number }>('/memory/search', {
+      method: 'POST',
+      body: { query, limit: limit || 5, threshold: threshold || 0.5 },
+    }),
+  getRunMemory: (run_id: string) =>
+    api<Record<string, unknown>>(`/memory/runs/${run_id}/summary`),
+}
+
+// MCP Tools
+export const toolsApi = {
+  list: () =>
+    api<{ tools: Record<string, unknown>[]; count: number }>('/tools'),
+  execute: (name: string, args: Record<string, unknown>) =>
+    api<Record<string, unknown>>(`/tools/${name}/execute`, {
+      method: 'POST',
+      body: args,
+    }),
+  getDetails: (name: string) =>
+    api<Record<string, unknown>>(`/tools/${name}`),
+}
+
+// Agent Runs
 
 // Types
 export interface UserInfo {

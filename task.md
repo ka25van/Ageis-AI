@@ -253,6 +253,11 @@ Tasks
 * [x] Short-term memory
 * [x] Long-term memory
 * [x] Semantic memory
+* [x] Wired into Planner agent (injects past context, stores results)
+* [x] Wired into Knowledge agent (searches past Q&A, stores new Q&A)
+* [x] Alembic migration for memory tables
+* [x] Fixed `Vector(1536)` → `Vector(768)` (nomic-embed-text dimension)
+* [x] Fixed `MemorySystem._generate_embedding` to use `EmbeddingService`
 
 Acceptance Criteria
 
@@ -269,6 +274,9 @@ Tasks
 * [x] Tool Registry
 * [x] Tool Interface
 * [x] Tool Adapter
+* [x] Registered at app startup in `main.py`
+* [x] Wired into Planner agent (dispatch step to MCP tool if name matches registry)
+* [x] Frontend API client (`toolsApi`)
 
 Acceptance Criteria
 

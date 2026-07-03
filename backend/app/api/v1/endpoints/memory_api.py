@@ -64,12 +64,17 @@ async def get_long_term(
 @router.post("/semantic")
 async def store_semantic(
     text: str,
-    embedding: list[float],
+    embedding: list[float] = None,
+    metadata: dict = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
     memory: MemorySystem = Depends(get_memory_system),
 ):
-    await memory.store_semantic(text, embedding)
+    if embedding is None:
+        emb = (await memory.embeddings.generate_embeddings([text]))[0]
+    else:
+        emb = embedding
+    await memory.store_semantic(text, emb, metadata)
     return {"status": "stored"}
 
 

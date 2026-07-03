@@ -8,6 +8,7 @@ import { Projects } from './pages/Projects'
 import { Repositories } from './pages/Repositories'
 import { Knowledge } from './pages/Knowledge'
 import { Agents } from './pages/Agents'
+import { ApprovalQueue } from './pages/ApprovalQueue'
 import { Settings } from './pages/Settings'
 
 function App() {
@@ -23,6 +24,7 @@ function App() {
           <Route path="/repositories" element={<Repositories />} />
           <Route path="/knowledge" element={<Knowledge />} />
           <Route path="/agents" element={<Agents />} />
+          <Route path="/approvals" element={<ApprovalQueue />} />
           <Route path="/settings" element={<Settings />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -1,6 +1,6 @@
 # Aegis AI
 
-**Autonomous Engineering Platform**
+**Agentic AI Engineering & AIOps Platform**
 
 ---
 

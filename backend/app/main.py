@@ -9,6 +9,12 @@ from app.core.logging import setup_logging, get_logger
 from app.core.di import container
 from app.api.v1.router import api_router
 
+# Register MCP tool adapters (import triggers self-registration)
+import app.mcp.github  # noqa: F401
+import app.mcp.filesystem  # noqa: F401
+import app.mcp.docker  # noqa: F401
+import app.mcp.aws  # noqa: F401
+
 
 # Setup logging
 setup_logging(settings.LOG_LEVEL)

@@ -61,7 +61,7 @@ async def list_pending(
     db: AsyncSession = Depends(get_db_session),
     service: ApprovalService = Depends(get_approval_service),
 ):
-    approvals = await service.list_pending(current_user.id)
+    approvals = await service.list_pending()
     return {"approvals": approvals, "count": len(approvals)}
 
 

@@ -10,6 +10,7 @@ const navigation = [
   { name: 'Repositories', href: '/repositories', icon: Database },
   { name: 'Knowledge', href: '/knowledge', icon: Bot },
   { name: 'Agents', href: '/agents', icon: Bot },
+  { name: 'Approvals', href: '/approvals', icon: Shield },
   { name: 'Settings', href: '/settings', icon: Settings },
 ]
 
