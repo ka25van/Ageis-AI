@@ -225,7 +225,7 @@ export function Knowledge() {
                   {memResults.map((r, i) => (
                     <div key={i} className="border border-gray-200 rounded-lg p-4 hover:border-purple-200 transition-colors">
                       <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs font-medium text-purple-600">{String(r.metadata?.type || 'memory')}</span>
+                        <span className="text-xs font-medium text-purple-600">{String((r.metadata as Record<string, unknown>)?.type || 'memory')}</span>
                         <span className="text-xs text-gray-400">{typeof r.similarity === 'number' ? `${(r.similarity * 100).toFixed(0)}% match` : ''}</span>
                       </div>
                       <pre className="text-sm text-gray-700 whitespace-pre-wrap line-clamp-6">{String(r.text || '')}</pre>

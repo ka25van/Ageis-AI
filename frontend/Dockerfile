@@ -1,21 +1,16 @@
-FROM node:20-alpine AS deps
-
-WORKDIR /app
-
-COPY package*.json ./
-RUN npm ci --only=production
-
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 
-COPY tsconfig*.json vite.config.ts index.html ./
+COPY tsconfig*.json vite.config.ts postcss.config.js tailwind.config.js index.html ./
 COPY public ./public
 COPY src ./src
 
+ARG VITE_API_URL=/api/v1
+ENV VITE_API_URL=$VITE_API_URL
 RUN npm run build
 
 FROM nginx:1.27-alpine AS runner

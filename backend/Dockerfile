@@ -12,9 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml ./
+COPY app ./app
 
-RUN pip wheel --no-cache-dir --no-deps --wheel-dir /wheels -e .
+RUN pip wheel --no-cache-dir --wheel-dir /wheels -e .
 
 FROM python:3.11-slim AS runner
 
@@ -33,7 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && adduser --system --uid 1001 --gid 1001 app
 
 COPY --from=builder /wheels /wheels
-RUN pip install --no-cache-dir --no-index --find-links=/wheels aegis-backend \
+RUN pip install --no-cache-dir --find-links=/wheels aegis-backend \
     && rm -rf /wheels
 
 COPY --chown=app:app app ./app

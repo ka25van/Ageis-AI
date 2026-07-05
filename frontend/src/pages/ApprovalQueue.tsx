@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CheckCircle, XCircle, Clock, AlertCircle, Loader2, ExternalLink } from 'lucide-react'
+import { CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react'
 import { approvalsApi, plannerApi } from '../lib/api'
 
 interface ApprovalItem {
@@ -22,7 +22,7 @@ export function ApprovalQueue() {
   async function load() {
     try {
       const data = await approvalsApi.listPending()
-      setApprovals(data.approvals as ApprovalItem[])
+      setApprovals(data.approvals as unknown as ApprovalItem[])
     } catch { /* empty */ }
     finally { setLoading(false) }
   }

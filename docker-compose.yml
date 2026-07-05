@@ -32,19 +32,19 @@ services:
       retries: 5
     restart: unless-stopped
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: aegis-ollama
-    volumes:
-      - ollama_data:/root/.ollama
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    restart: unless-stopped
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: aegis-ollama
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   ports:
+  #     - "${OLLAMA_PORT:-11434}:11434"
+  #   healthcheck:
+  #     test: ["CMD", "ollama", "list"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #   restart: unless-stopped
 
   backend:
     build:
@@ -54,7 +54,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-aegis}
       REDIS_URL: redis://redis:6379/0
-      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
       SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
@@ -76,8 +76,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      ollama:
-        condition: service_started
+      # ollama:
+      #   condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/api/v1/health', timeout=2)"]
       interval: 30s
@@ -108,4 +108,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  ollama_data:
+  # ollama_data:

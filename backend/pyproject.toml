@@ -2,7 +2,7 @@
 name = "aegis-backend"
 version = "0.1.0"
 description = "Aegis AI Backend API"
-readme = "README.md"
+readme = ""
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110.0",
