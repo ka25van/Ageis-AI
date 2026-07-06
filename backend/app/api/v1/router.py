@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import health, auth, projects, repositories, documents, embeddings, repository_analysis, planner, workflows, memory_api, tools, repository_agent, knowledge_agent, incident_agent, documentation_agent, code_review, approvals, observability, deploy_agent
+from app.api.v1.endpoints import health, auth, projects, repositories, documents, embeddings, repository_analysis, planner, workflows, memory_api, tools, repository_agent, knowledge_agent, incident_agent, documentation_agent, code_review, approvals, observability, deploy_agent, alerts
 
 api_router = APIRouter()
 
@@ -23,3 +23,4 @@ api_router.include_router(code_review.router, prefix="", tags=["code-review"])
 api_router.include_router(approvals.router, prefix="", tags=["approvals"])
 api_router.include_router(observability.router, prefix="", tags=["observability"])
 api_router.include_router(deploy_agent.router, prefix="", tags=["deploy-agent"])
+api_router.include_router(alerts.router, prefix="", tags=["alerts"])

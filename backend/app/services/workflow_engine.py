@@ -128,6 +128,13 @@ class WorkflowEngine:
         self.registry = registry
 
     async def _build_context_for_step(self, step: ExecutionStep, project_id: UUID, run_id: UUID) -> ProjectContext:
+        # If EngineeringContext is available (wired via execute_plan), use its
+        # pre-built ProjectContext as the base to avoid redundant DB/embedding queries.
+        ec = getattr(self, '_engineering_context', None)
+        if ec is not None:
+            import dataclasses
+            return dataclasses.replace(ec.project, step_input=step.input)
+
         repository_id: Optional[UUID] = None
         rid_raw = step.input.get("repository_id") or (str(project_id) if project_id else None)
         if rid_raw:
@@ -162,6 +169,7 @@ class WorkflowEngine:
         project_id: UUID,
         run_id: UUID,
         max_retries: int = 3,
+        engineering_context: Optional[Any] = None,
     ) -> Dict:
         """Execute an ExecutionPlan by resolving its DAG and dispatching steps.
         
@@ -172,6 +180,7 @@ class WorkflowEngine:
         - Pauses for approvals
         - Tracks progress
         """
+        self._engineering_context = engineering_context
         runtime = ExecutionRuntime()
         step_results: Dict[str, StepResult] = {}
         completed_steps = 0

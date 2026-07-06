@@ -350,3 +350,10 @@ export interface AgentRun {
   created_at: string
   updated_at: string
 }
+
+export const alertsApi = {
+  stats: (): Promise<{ total_alerts: number; firing: number; resolved: number; unknown: number }> =>
+    api('/alerts/stats'),
+  history: (limit = 50): Promise<{ alerts: Record<string, unknown>[]; count: number }> =>
+    api(`/alerts/history?limit=${limit}`),
+}

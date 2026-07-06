@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+from typing import Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -61,9 +62,10 @@ async def _execute_plan_and_build_response(
     run_id: UUID,
     workflow_engine: WorkflowEngine,
     merger: ResponseMerger,
+    engineering_context: Optional[EngineeringContext] = None,
 ) -> dict:
     """Execute a plan via WorkflowEngine and build the response."""
-    exec_result = await workflow_engine.execute_plan(plan, project_id, run_id)
+    exec_result = await workflow_engine.execute_plan(plan, project_id, run_id, engineering_context=engineering_context)
 
     agent_results: dict[str, AgentResult] = {}
     for step in plan.steps:
@@ -271,7 +273,7 @@ async def route_and_execute(
     await db.commit()
     await db.refresh(run)
 
-    response_data = await _execute_plan_and_build_response(plan, task, project_id, run.id, workflow_engine, merger)
+    response_data = await _execute_plan_and_build_response(plan, task, project_id, run.id, workflow_engine, merger, engineering_context=ec)
 
     # Update run status
     run.status = "completed"

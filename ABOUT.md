@@ -1,639 +1,576 @@
-# Aegis AI
+# Aegis AI — Full Application Overview
 
-**Agentic AI Engineering & AIOps Platform**
-
----
-
-# 1. Overview
-
-## What is Aegis AI?
-
-Aegis AI is an enterprise-grade AI Engineering Platform that assists software engineers, DevOps engineers, SREs, Platform Engineers, and AI Engineers throughout the software development lifecycle.
-
-Unlike traditional AI chatbots that answer questions, Aegis AI understands repositories, infrastructure, documentation, deployment pipelines, incidents, and engineering workflows. It reasons using multiple specialized AI agents and safely executes engineering tasks through Human-in-the-Loop (HITL) approval.
-
-The long-term vision is to create an AI Engineering teammate capable of assisting with investigation, planning, documentation, code review, deployment analysis, infrastructure understanding, and operational automation.
+An open-source Agentic AI Engineering & AIOps Platform. Aegis AI ingests code repositories and documents, analyzes them via LLM-powered agents, supports conversational task routing, human-in-the-loop approvals, and a three-tier memory system — all running locally via Docker.
 
 ---
 
-# 2. Vision
+## 1. Architecture Overview
 
-Modern engineering teams use dozens of disconnected tools:
+```
+                        ┌─────────────┐
+                        │   Browser    │
+                        │  :80 (prod)  │
+                        │ :5173 (dev)  │
+                        └──────┬──────┘
+                               │ HTTP
+                               ▼
+                    ┌──────────────────┐
+                    │  Nginx (frontend) │
+                    │  Serves SPA      │
+                    │  /api/v1 -> back │
+                    └────────┬─────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+              ▼              ▼              ▼
+      ┌────────────┐ ┌──────────┐ ┌──────────────┐
+      │  Backend   │ │  Redis   │ │   Postgres   │
+      │  :8000     │ │  :6379   │ │   :5432      │
+      │  FastAPI   │ │  Cache   │ │   pgvector   │
+      └─────┬──────┘ └──────────┘ └──────────────┘
+            │
+            ▼
+      ┌──────────────┐
+      │   Ollama     │  (host machine, not containerized)
+      │  :11434      │
+      │  llama3.2    │
+      │  nomic-embed │
+      └──────────────┘
+```
 
-* GitHub
-* Jira
-* Jenkins
-* Kubernetes
-* Docker
-* AWS
-* PostgreSQL
-* Confluence
-* Markdown Documentation
-* PDFs
-* Log Files
-
-Engineers constantly switch between these systems to understand software, investigate failures, review code, and manage deployments.
-
-Aegis AI unifies these systems into a single AI-powered workspace capable of reasoning over engineering knowledge and performing intelligent actions.
-
----
-
-# 3. Objectives
-
-The primary objectives are:
-
-* Build a production-quality AI Engineering platform.
-* Demonstrate modern Agentic AI architecture.
-* Showcase enterprise software engineering practices.
-* Provide a real-world engineering assistant.
-* Maintain modular and scalable architecture.
-* Support future expansion with minimal refactoring.
-
----
-
-# 4. Target Users
-
-| User                | Primary Benefits                                     |
-| ------------------- | ---------------------------------------------------- |
-| Software Engineer   | Repository understanding, code review, documentation |
-| AI Engineer         | Agent orchestration, RAG, MCP experimentation        |
-| DevOps Engineer     | Deployment analysis, Docker, Kubernetes              |
-| SRE                 | Incident investigation and root cause analysis       |
-| Platform Engineer   | Infrastructure visibility                            |
-| Engineering Manager | Project knowledge and engineering insights           |
+4 Docker containers managed via `docker-compose.yml` + `docker-compose.prod.yml`.
 
 ---
 
-# 5. Core Capabilities
+## 2. Backend (FastAPI + Python 3.11)
 
-* Multi-Agent AI
-* Repository Understanding
-* Hybrid RAG
-* Engineering Knowledge Base
-* Incident Investigation
-* Root Cause Analysis
-* Infrastructure Analysis
-* Documentation Generation
-* Code Review
-* Memory System
-* MCP Tool Integration
-* Human Approval Workflows
-* Timeline & Audit Trail
+### 2.1 Tech Stack
+- **Framework**: FastAPI (async), Uvicorn
+- **ORM**: SQLAlchemy 2.0 (async), Alembic migrations
+- **Database**: PostgreSQL 16 + pgvector extension
+- **Cache**: Redis 7 (AOF persistence)
+- **LLM Integration**: LangChain (ChatOllama / ChatOpenAI)
+- **Auth**: JWT (access + refresh tokens via python-jose), Argon2 password hashing
+- **Vector Search**: pgvector (IVFFlat index, 768-dim embeddings)
+- **Structured Logging**: structlog
+- **Observability**: Prometheus metrics (Counter, Histogram, Gauge)
+- **Background Tasks**: asyncio tasks
+
+### 2.2 API Endpoints (68 total under `/api/v1`)
+
+#### Health (`/health`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | /health | Root health check |
+| GET | /health/db | Database connectivity |
+| GET | /health/redis | Redis connectivity |
+
+#### Auth (`/auth`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /auth/register | Register new user |
+| POST | /auth/login | Login with email/password |
+| POST | /auth/refresh | Refresh JWT token pair |
+| GET | /auth/me | Get current user profile |
+| PATCH | /auth/me | Update profile (full_name) |
+| POST | /auth/change-password | Change password |
+| GET | /auth/api-keys | List API keys |
+| POST | /auth/api-keys | Create API key |
+| DELETE | /auth/api-keys/{id} | Delete API key |
+
+#### Projects (`/projects`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /projects | Create project |
+| GET | /projects | List all projects |
+| GET | /projects/{id} | Get project details |
+| PATCH | /projects/{id} | Update project |
+| DELETE | /projects/{id} | Delete project |
+
+#### Repositories (`/repositories`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /repositories | Register repository |
+| GET | /repositories | List all repositories |
+| GET | /repositories/{id} | Get repository details |
+| POST | /repositories/{id}/ingest | Trigger file ingestion |
+| GET | /repositories/{id}/files | List repository files |
+| DELETE | /repositories/{id} | Delete repository |
+
+#### Documents (`/documents`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /documents/upload | Upload PDF/MD/TXT file |
+| POST | /documents/text | Create text document |
+| GET | /documents | List all documents |
+| GET | /documents/{id} | Get document with content |
+| GET | /documents/{id}/chunks | Get document chunks |
+| DELETE | /documents/{id} | Delete document |
+
+#### Embeddings (`/embeddings`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /embeddings/documents/{id}/generate | Generate embeddings for document chunks |
+| POST | /embeddings/repositories/{id}/generate | Generate embeddings for repo files |
+| POST | /embeddings/search | Semantic search (cosine similarity) |
+| POST | /embeddings/hybrid-search | Hybrid search (semantic + ILIKE keyword) |
+
+#### Repository Analysis (`/analyze`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /analyze/{id} | Full repository analysis (deps, APIs, architecture) |
+| GET | /analyze/{id}/dependencies | Dependency graph |
+| GET | /analyze/{id}/services | Service discovery + architecture |
+
+#### Planner (`/planner`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /planner/plan | Plan + execute a task via DAG |
+| POST | /planner/route | Route message to agents + execute |
+| POST | /planner/resume/{run_id} | Resume after HITL approval |
+| GET | /planner/runs/{run_id} | Get run status |
+| GET | /planner/runs/{run_id}/steps | Get run steps with results |
+
+#### Workflows (`/workflows`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | /workflows/runs | List agent runs |
+| POST | /workflows/execute | Execute custom workflow |
+| GET | /workflows/runs/{id}/state | Get workflow state |
+| POST | /workflows/runs/{id}/resume | Resume workflow |
+| POST | /workflows/runs/{id}/retry | Retry failed workflow |
+
+#### Memory (`/memory`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /memory/short-term/{run_id} | Store short-term memory |
+| GET | /memory/short-term/{run_id}/{key} | Read short-term memory |
+| POST | /memory/long-term | Store long-term memory (TTL key-value) |
+| GET | /memory/long-term/{key} | Read long-term memory |
+| POST | /memory/semantic | Store semantic memory (vector-embedded) |
+| GET | /memory/semantic | List semantic memory entries |
+| POST | /memory/search | Search semantic memory by similarity |
+| POST | /memory/conversation/{project_id} | Store chat message |
+| GET | /memory/conversation/{project_id} | Get conversation history |
+| DELETE | /memory/conversation/{project_id} | Clear conversation |
+| GET | /memory/runs/{run_id}/summary | Summarize a run |
+
+#### MCP Tools (`/tools`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | /tools | List all registered MCP tools |
+| GET | /tools/{name} | Get tool metadata + schema |
+| POST | /tools/{name}/execute | Execute a tool |
+
+#### Repository Agent (`/repo-agent`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | /repo-agent/{id}/understand | LLM architecture analysis |
+| GET | /repo-agent/{id}/summary | Summarize architecture |
+| GET | /repo-agent/{id}/search | Search codebase |
+
+#### Knowledge Agent (`/knowledge`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /knowledge/search | Retrieve docs + LLM answer |
+| POST | /knowledge/hybrid | Hybrid search + rank |
+| POST | /knowledge/rank | Re-rank results |
+
+#### Incident Agent (`/incidents`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /incidents/analyze | Scan repo for error keywords + root cause |
+| POST | /incidents/root-cause | Deep root cause analysis |
+| POST | /incidents/recommendations | Remediation recommendations |
+
+#### Documentation Agent (`/docs`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /docs/readme | Generate README.md |
+| POST | /docs/api | Generate API documentation |
+| POST | /docs/architecture | Generate architecture docs |
+
+#### Code Review Agent (`/code-review`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /code-review/pr | PR review (security + quality) |
+| POST | /code-review/security | Security vulnerability audit |
+| POST | /code-review/best-practices | Best practices analysis |
+
+#### Approvals (`/approvals`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /approvals/{run_id} | Request HITL approval |
+| POST | /approvals/{id}/approve | Approve a pending action |
+| POST | /approvals/{id}/reject | Reject + provide reason |
+| GET | /approvals/pending | List pending approvals |
+| GET | /approvals/audit | Approval audit log |
+
+#### Observability (`/observability`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | /observability/metrics | Prometheus metrics |
+| GET | /observability/tracing | Execution tracing data |
+| GET | /observability/dashboard | Dashboard aggregate stats |
+| POST | /observability/record | Record a request metric |
+
+#### Deploy Agent (`/deploy`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /deploy/analyze | Analyze Docker/CI/CD/infra configs |
 
 ---
 
-# 6. Product Workflow
+## 3. Database Schema (8 tables, pgvector)
 
-```mermaid
-flowchart TD
+### 3.1 Tables
 
-User --> Login
+| Table | Purpose | Key Columns |
+|-------|---------|-------------|
+| `users` | User accounts | id, email, hashed_password, full_name, is_active, is_superuser |
+| `api_keys` | API keys per user | id, user_id (FK), key_hash, key_prefix, is_active, expires_at |
+| `projects` | Workspace projects | id, name, description, owner_id (FK), settings (JSONB) |
+| `repositories` | Git repositories | id, project_id (FK), url, branch, provider, indexing_status |
+| `repository_files` | Files inside repos | id, repository_id (FK), path, language, size_bytes, content |
+| `documents` | Uploaded PDFs/MD/TXT | id, project_id (FK), title, source_type, content |
+| `document_chunks` | Chunked docs with embeddings | id, document_id (FK), chunk_index, content, embedding (VECTOR(768)) |
+| `agent_runs` | Planner/agent execution runs | id, project_id, agent_type, status, input/output (JSONB) |
+| `agent_steps` | Individual steps in a run | id, run_id (FK), step_index, step_type, tool_name, status |
+| `approvals` | HITL approval records | id, run_id (FK), action_type, action_data (JSONB), status, reviewed_by |
+| `long_term_memory` | TTL-based key-value store | id, user_id, key, value (JSONB), expires_at |
+| `semantic_memory` | Vector-embedded text | id, text, embedding (VECTOR(768)), metadata (JSONB) |
 
-Login --> Project
+### 3.2 Embedding Dimensions
 
-Project --> ConnectResources
+The vector dimension is 768 (nomic-embed-text output). Two IVFFlat indexes exist on `document_chunks.embedding` and `semantic_memory.embedding`.
 
-ConnectResources --> Repository
+---
 
-ConnectResources --> Documentation
+## 4. Agent System
 
-ConnectResources --> Infrastructure
+### 4.1 Architecture
 
-Repository --> Ingestion
+```
+User Task
+    │
+    ▼
+┌──────────────┐
+│ IntentRouter │  Keyword + LLM fallback routing
+│              │  Returns ExecutionPlan (DAG of steps)
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│ PlanValidator│  Validates: cycles, missing deps, capability availability
+│              │  Checks approval requirements
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│WorkflowEngine│  Executes DAG via topological sort (Kahn's algorithm)
+│              │  Independent steps run in parallel
+│              │  Per-step: retries with backoff, timeout, rollback
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│CapabilityReg.│  Routes to agent / MCP tool / REST / Python
+│ + Adapters   │  Normalizes all to (context) -> AgentResult
+└──────────────┘
+```
 
-Documentation --> Ingestion
+### 4.2 Agents (7 specialized + 1 meta-planner)
 
-Infrastructure --> Ingestion
+| Agent | File | Purpose |
+|-------|------|---------|
+| **Planner Agent** | `planner.py` | Meta-agent. Decomposes tasks into ExecutionPlan DAG. Integrates memory + MCP tools. |
+| **Repository Agent** | `repository_agent.py` | Analyzes codebases: architecture, tech stack, design patterns, code search |
+| **Knowledge Agent** | `knowledge_agent.py` | Hybrid search over documents. LLM Q&A with memory context injection |
+| **Incident Agent** | `incident_agent.py` | Error keyword scanning + LLM root cause + remediation |
+| **Documentation Agent** | `documentation_agent.py` | Generates README, API docs, architecture docs in markdown |
+| **Code Review Agent** | `code_review_agent.py` | Security audit, code quality, best practices via LLM |
+| **Deploy Agent** | `deploy_agent.py` | Analyzes Dockerfiles, compose, CI/CD, infra configs |
 
-Ingestion --> KnowledgeBase
+### 4.3 ExecutionPlan → ExecutionStep
 
-KnowledgeBase --> AIWorkspace
+The contract between Planner and WorkflowEngine:
+
+```python
+@dataclass
+class ExecutionStep:
+    id: str                           # Unique step ID
+    name: str                         # Human-readable name
+    capability: str                   # Capability name to dispatch (e.g. "repository", "knowledge")
+    input: Dict                       # Step-specific params (becomes step_input in ProjectContext)
+    depends_on: List[str]            # DAG dependencies (IDs of predecessor steps)
+    requires_approval: bool
+    retry_policy: Optional[RetryPolicy]  # max_retries, retry_delay, backoff_multiplier
+    timeout_seconds: Optional[int]
+    rollback_step: Optional[str]      # ID of the rollback step
+
+@dataclass  
+class ExecutionPlan:
+    intent: str
+    task_description: str
+    steps: List[ExecutionStep]
+    approvals_required: List[str]     # Step IDs needing approval
+    rollback_strategy: Optional[RollbackStrategy]
+```
+
+### 4.4 CapabilityRegistry + Execution Adapters
+
+A single `CapabilityRegistry` holds all dispatch targets. Four adapter factories normalize execution types:
+
+| Adapter | Factory | Normalizes |
+|---------|---------|------------|
+| `adapt_agent` | Identity wrapper | Agent `.process()` methods already match `(context) -> AgentResult` |
+| `adapt_mcp` | Captures `tool_name`, dispatches via MCP registry | Splits `step_input` as tool params |
+| `adapt_rest` | Stub | Makes HTTP calls |
+| `adapt_python` | Stub | Executes Python snippets |
+
+At startup, `get_workflow_engine()` registers:
+- **6 agents** (repository, knowledge, incident, documentation, code_review, deploy)
+- **15 MCP tools** (3 GitHub + 4 Filesystem + 4 Docker + 4 AWS)
+- **2 stubs** (rest_call, python_exec)
+
+### 4.5 MCP Tool System
+
+14 tools across 4 adapters, all registered in `ToolRegistry` (singleton):
+
+| Adapter | Tools |
+|---------|-------|
+| **GitHub** | clone_repository, create_branch, create_pull_request |
+| **Filesystem** | read_file, write_file, search_files, list_directory |
+| **Docker** | build_image, run_container, stop_container, get_logs |
+| **AWS** | s3_list_buckets, s3_upload_file, ec2_list_instances, cloudwatch_get_metrics |
+
+Tools are registered at app startup via `import app.mcp.github` etc. in `main.py`.
+
+### 4.6 Memory System (Three-Tier)
+
+| Tier | Storage | TTL | Purpose |
+|------|---------|-----|---------|
+| **Short-term** | `AgentStep` DB records | Per-run | Current execution context (inputs, outputs, status per step) |
+| **Long-term** | `LongTermMemory` table | Configurable TTL | Persistent key-value across sessions |
+| **Semantic** | `SemanticMemory` table + pgvector | Forever | Vector-embedded text for similarity search |
+
+Integration points:
+- **PlannerAgent**: Injects matching semantic memory into LLM prompt before planning; stores results after completion
+- **KnowledgeAgent**: Searches semantic memory for past Q&A before calling LLM; stores new Q&A after
+
+---
+
+## 5. Frontend (React + Vite + Tailwind)
+
+### 5.1 Tech Stack
+- React 18, TypeScript 5.5
+- Vite 5.4 (build tool), React Router 6.26
+- Tailwind CSS 3.4, Lucide React icons
+- shadcn/ui component system (tailwind-merge + clsx)
+
+### 5.2 Page Routes (10 pages)
+
+| Path | Component | Auth | Purpose |
+|------|-----------|------|---------|
+| `/login` | Login.vue-style | No | Email/password login |
+| `/register` | Register | No | User registration |
+| `/dashboard` | Dashboard | Yes | Stats overview (projects, repos, runs) |
+| `/projects` | Projects | Yes | CRUD project management |
+| `/repositories` | Repositories | Yes | Repository list + ingest trigger |
+| `/knowledge` | Knowledge | Yes | Document browser, chunk viewer, semantic memory search |
+| `/agents` | Agents | Yes | Agent action cards + planner execution |
+| `/chat` | Chat | Yes | Conversational planner with expandable results |
+| `/approvals` | ApprovalQueue | Yes | HITL approval/reject actions |
+| `/settings` | Settings | Yes | Profile, password change, API key management |
+
+### 5.3 API Client (`lib/api.ts`)
+
+Typed fetch wrapper with:
+- JWT Bearer token injection
+- Auto-refresh on 401 (uses refresh token)
+- Token persistence in localStorage
+- Typed API objects for: authApi, projectsApi, repositoriesApi, documentsApi, plannerApi, repoAgentApi, knowledgeAgentApi, incidentAgentApi, docAgentApi, codeReviewApi, deployApi, approvalsApi, memoryApi, agentRunsApi
+
+---
+
+## 6. Deployment
+
+### 6.1 Docker Compose (Local Dev)
+
+File: `docker-compose.yml`
+
+| Service | Image | Port | Depends On | Healthcheck |
+|---------|-------|------|------------|-------------|
+| postgres | pgvector/pgvector:pg16 | 5432 | - | pg_isready |
+| redis | redis:7-alpine | 6379 | - | redis-cli ping |
+| backend | Custom Dockerfile | 8000 | postgres, redis | HTTP /api/v1/health |
+| frontend | Custom Dockerfile | 80 | backend | curl localhost:80 |
+
+Ollama runs on the **host machine** (not containerized). Backend connects via `host.docker.internal:11434`.
+
+### 6.2 Production Overlay
+
+File: `docker-compose.prod.yml`
+- Restricts port exposure (containers not exposed to host by default)
+- Requires `SECRET_KEY` env var (will fail if unset)
+- Mounts `init-db.sql` to auto-create pgvector extensions
+- Sets `LOG_LEVEL=WARNING`
+- Sets CORS origins to production domain
+
+### 6.3 Backend Dockerfile (multi-stage)
+
+- **Builder**: `python:3.11-slim`, installs build-essential + libpq-dev, builds wheels
+- **Runner**: `python:3.11-slim`, installs libpq-dev + curl, installs from wheels, copies app code
+- Runs as non-root `app` user
+- CMD: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
+
+### 6.4 Frontend Dockerfile (multi-stage)
+
+- **Builder**: `node:20-alpine`, installs deps, builds with `VITE_API_URL=/api/v1`
+- **Runner**: `nginx:1.27-alpine`, serves built static files
+- Nginx proxies `/api/v1/` to `backend:8000`
+
+### 6.5 Nginx Config
+
+- Serves SPA with fallback: `try_files $uri $uri/ /index.html`
+- Proxies `/api/v1/` to `http://backend:8000/api/v1/`
+- Gzip compression enabled for CSS/JS/JSON/SVG
+
+### 6.6 Local Development
+
+```powershell
+# Backend (requires venv + Ollama running locally)
+cd backend
+.\venv\Scripts\python -m uvicorn app.main:app --reload --port 8000
+
+# Frontend (dev server with hot reload)
+cd frontend
+npm run dev    # Starts on :5173, proxies /api to localhost:8000
+```
+
+### 6.7 Production via Docker
+
+```powershell
+# Build and start all services
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+# View logs
+docker compose logs -f backend
+docker compose logs -f frontend
+
+# Stop everything
+docker compose down
+
+# Reset databases (removes volumes)
+docker compose down -v
 ```
 
 ---
 
-# 7. Runtime Workflow
+## 7. Configuration
 
-```mermaid
-flowchart TD
+### 7.1 Environment Variables
 
-UserQuery
+| Variable | Default | Service | Purpose |
+|----------|---------|---------|---------|
+| `SECRET_KEY` | dev-secret-key... | Backend | JWT signing key |
+| `POSTGRES_PASSWORD` | postgres | Postgres | DB password |
+| `REDIS_PASSWORD` | (empty) | Redis | Redis password |
+| `DATABASE_URL` | postgresql+asyncpg://... | Backend | DB connection string |
+| `REDIS_URL` | redis://localhost:6379/0 | Backend | Redis connection string |
+| `OLLAMA_BASE_URL` | http://localhost:11434 | Backend | Ollama endpoint |
+| `OLLAMA_MODEL` | llama3.2 | Backend | Model for generation |
+| `EMBEDDING_MODEL` | nomic-embed-text | Backend | Model for embeddings |
+| `LLM_PROVIDER` | ollama | Backend | `ollama` or `openai` |
+| `OPENAI_API_KEY` | (empty) | Backend | OpenAI key (if provider=openai) |
+| `VITE_API_URL` | /api/v1 | Frontend | API base URL (relative via nginx proxy) |
 
--->
+### 7.2 Python Dependencies
 
-Task["Task (TaskSource + TaskType)"]
+Key packages: fastapi, uvicorn, sqlalchemy 2.0, asyncpg, pgvector, redis, httpx, python-jose, passlib[argon2], structlog, pdfplumber, markdown, langgraph, langchain, langchain-ollama, langchain-openai, prometheus-client
 
--->
+### 7.3 Frontend Dependencies
 
-EngineeringContext["EngineeringContext
-(root aggregate)"]
+React 18, react-router-dom 6, lucide-react, tailwindcss 3, vite 5, typescript 5
 
--->
+---
 
-PlannerAgent["IntentRouter +
-PlannerAgent"]
+## 8. Security
 
--->
+- **JWT Auth**: Access token (30 min) + refresh token (7 days)
+- **Password Hashing**: Argon2 via passlib
+- **API Keys**: Hashed storage, prefix-based identification
+- **CORS**: Configurable origins, default allows dev ports
+- **Non-root user**: Backend and frontend run as non-root in containers
+- **HITL Approval**: Destructive/deploy actions require manual approval via web UI
 
-AgentSelection
+---
 
--->
+## 9. Key Architectural Decisions
 
-ToolExecution
+| Decision | Rationale |
+|----------|-----------|
+| **Planner/WorkflowEngine split** | Planner reasons and produces ExecutionPlan; WorkflowEngine orchestrates only. Clear separation of concerns. |
+| **DAG execution via topological sort** | Independent steps run in parallel. Kahn's algorithm. |
+| **CapabilityRegistry as single dispatch point** | No separate executor layer. Adapters normalize all execution types (agent, MCP, REST, Python) at registration time. |
+| **No global singleton** | CapabilityRegistry populated per-request in factory function. |
+| **Ollama on host** | Avoid GPU passthrough complexity. Container connects via host.docker.internal. |
+| **step_input in ProjectContext** | Only difference between agent and MCP dispatch — MCP tools need step-specific params. |
+| **Plain-text prompts + JSON parsing** | Keeps LLM calls simple. No structured output formats. |
+| **pgvector for embeddings** | Native PostgreSQL extension — no vector DB lock-in. |
+| **structlog for logging** | Structured JSON logs for production observability. |
+| **Prometheus metrics** | Counter (requests), Histogram (latency), Gauge (active runs) built into every endpoint. |
 
--->
+---
 
-KnowledgeRetrieval
+## 10. CI/CD (`.github/workflows/`)
 
--->
+| Workflow | Purpose |
+|----------|---------|
+| `ci.yml` | Run on push — lint, type-check, test |
+| `deploy.yml` | CD pipeline — build images, push to registry, deploy to server |
 
-Reasoning
+---
 
--->
+## 11. Project History (task progression)
 
-Approval
+| File | Status | Content |
+|------|--------|---------|
+| `task.md` | ✅ Complete | Original project spec |
+| `task_v1.md` | ✅ Complete | V1 milestones |
+| `task_v2.md` | ✅ Complete (7 milestones) | Planner-centric migration |
+| `task_v3.md` | ✅ M1 complete | Generic adapter architecture (CapabilityRegistry evolution) |
+| `AGENTS.md` | ✅ Current | Agent architecture reference |
 
--->
+### Milestones Achieved (task_v2.md)
+1. **M1** — ExecutionPlan dataclasses + CapabilityRegistry + PlanValidator
+2. **M2** — ExecutionRuntime (retries, timeout, cancellation, telemetry)
+3. **M3** — WorkflowEngine consumes ExecutionPlan via topological sort
+4. **M4** — IntentRouter returns ExecutionPlan; PlannerAgent.plan() no side effects
+5. **M5** — HITL persistence + approval endpoints + resume flow
+6. **M6** — Chat routing fix + repo agent fix + frontend fixes
+7. **M7** — Cleanup: config constants, logging, 17 unused endpoints removed
 
-Execution
+### Milestones Achieved (task_v3.md)
+1. **M1** — Generic adapter architecture: execution_adapters.py, CapabilityRegistry extended, MCP tools wired via adapters, step_input in ProjectContext
 
--->
+---
 
-MemoryUpdate
+## 12. Quick Start
 
--->
+```powershell
+# Prerequisites: Docker Desktop + Ollama (with models pulled)
 
-Response
+# 1. Clone and set up
+cd ageis-ai
+
+# 2. Start services
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+# 3. Open browser
+# Local:    http://localhost
+# Remote:   cloudflared tunnel --url http://localhost:80
+
+# 4. Register an account at /register
+# 5. Create a project, add a repository, explore agents
 ```
-
----
-
-# 8. High-Level Architecture
-
-```mermaid
-flowchart LR
-
-User
-
---> React
-
---> FastAPI
-
---> TaskSource["Task Source Abstractions
-(CHAT / API / WEBHOOK_GITHUB)"]
-
---> EngineeringContext["EngineeringContext
-(sub-contexts composed)"]
-
---> Planner["IntentRouter + PlannerAgent"]
-
-Planner --> Agents
-
-Agents --> MCP
-
-MCP --> GitHub
-
-MCP --> Docker
-
-MCP --> AWS
-
-MCP --> PostgreSQL
-
-Agents --> PostgreSQL
-
-Agents --> pgvector
-
-Agents --> Redis
-```
-
----
-
-# 9. Low-Level Architecture
-
-The platform is composed of the following logical layers:
-
-1. Frontend
-2. Backend API
-3. Task Source Abstraction (CHAT, API, WEBHOOK_GITHUB, future comments)
-4. Engineering Context Engine (root aggregate with 8 bounded sub-contexts)
-5. AI Runtime (Planner / IntentRouter)
-6. Workflow Engine
-7. Agent Runtime
-8. Memory Layer (short-term, long-term, semantic)
-9. Retrieval Layer (hybrid search, pgvector)
-10. MCP Tool Layer
-11. Infrastructure Integrations
-
-Each layer is independently replaceable and communicates through clearly defined interfaces.
-
----
-
-# 10. AI Agent Architecture
-
-Core agents:
-
-* Planner Agent
-* Knowledge Agent
-* Repository Agent
-* Infrastructure Agent
-* Documentation Agent
-* Incident Agent
-* Code Review Agent
-* Security Agent
-* Testing Agent
-
-Each agent contains:
-
-* Responsibilities
-* Prompt
-* Tool Access
-* Memory
-* Output Schema
-
-Agents do not communicate directly.
-
-All orchestration is handled by the Planner → EngineeringContext pipeline.
-
-Agents receive `ec.project` (ProjectContext) from EngineeringContext — they never construct context themselves.
-
----
-
-# 11. Memory Architecture
-
-Three memory layers are maintained.
-
-### Short-Term Memory
-
-Current conversation
-
-Workflow state
-
-Execution state
-
----
-
-### Long-Term Memory
-
-Projects
-
-Repositories
-
-Incidents
-
-Previous fixes
-
-User preferences
-
----
-
-### Semantic Memory
-
-Embeddings
-
-Vector Search
-
-Knowledge relationships
-
----
-
-# 12. Knowledge Ingestion Pipeline
-
-Repository
-
-↓
-
-Parser
-
-↓
-
-Chunking
-
-↓
-
-Embedding
-
-↓
-
-Metadata Extraction
-
-↓
-
-Knowledge Storage
-
-↓
-
-Hybrid Retrieval
-
----
-
-# 13. MCP Integration
-
-Supported integrations include:
-
-* GitHub
-* Filesystem
-* Docker
-* PostgreSQL
-* AWS
-* Kubernetes (future)
-* Browser (future)
-
-Agents interact only with the Tool Registry.
-
-The Tool Registry communicates with MCP servers.
-
----
-
-# 14. Engineering Context Engine
-
-```mermaid
-flowchart TD
-
-Task["Task (TaskSource + TaskType)"]
-
---> EngineeringContext
-
-EngineeringContext --> PC["ProjectContext
-(backward compatible)"]
-
-EngineeringContext --> RC["RepositoryContext
-(summary, deps, layers)"]
-
-EngineeringContext --> KC["KnowledgeContext
-(hybrid search results)"]
-
-EngineeringContext --> IC["InfrastructureContext
-(Docker, CI configs)"]
-
-EngineeringContext --> MC["MemoryContext
-(semantic + conversation)"]
-
-EngineeringContext --> EC["ExecutionContext
-(recent run history)"]
-
-EngineeringContext --> WC["WorkflowContext
-(state + approvals)"]
-```
-
-## Principles
-
-* **Composition over inheritance**: EngineeringContext is a root aggregate with 8 bounded sub-contexts — no deep class hierarchies.
-* **Black-box consumption**: Planner never knows how EngineeringContext was built — consumes it as a black box.
-* **Backward compatibility**: All agents continue receiving `ec.project` (ProjectContext) — zero agent files modified.
-* **Extensible**: Adding a new sub-context means one new dataclass + one fetch call in `build_engineering_context()`. Zero Planner/agent changes.
-
----
-
-# 15. Task Source Abstraction
-
-```mermaid
-flowchart LR
-
-Sources["CHAT | API | WEBHOOK_GITHUB | ..."]
-
---> Task["Task
-(input, project_id, repository_id, source, type)"]
-
---> EngineeringContext["EngineeringContext"]
-```
-
-## Principles
-
-* **Single shared model**: All integrations consume the same `Task` dataclass from `backend/app/core/task.py`.
-* **Zero Planner changes per source**: Adding a new source = one new `TaskSource` enum value + one endpoint that creates a `Task`.
-* **Future-ready**: Comments from Jira, PRs from GitHub, alerts from PagerDuty all become `Task` → `EngineeringContext` without refactoring.
-
----
-
-# 16. Human-in-the-Loop
-
-Potentially destructive actions always require approval.
-
-Examples:
-
-* Git Push
-* Pull Request Creation
-* Docker Execution
-* Kubernetes Changes
-* AWS Changes
-* File Deletion
-* Database Modification
-
-No external state-changing operation should execute automatically.
-
----
-
-# 17. Technology Stack
-
-### Frontend
-
-* React
-* TypeScript
-* TailwindCSS
-* ShadCN UI
-
-### Backend
-
-* FastAPI
-* Python
-* SQLAlchemy
-* Alembic
-
-### AI
-
-* LangGraph
-* LangChain
-* Ollama
-* Local LLMs
-
-### Database
-
-* PostgreSQL
-* pgvector
-* Redis
-
-### Infrastructure
-
-* Docker
-* Docker Compose
-* GitHub Actions
-* AWS
-
----
-
-# 18. Development Phases
-
-## Phase 1
-
-Project foundation
-
-Authentication
-
-Docker
-
-Database
-
-Frontend shell
-
-Backend shell
-
----
-
-## Phase 2
-
-Knowledge ingestion
-
-Repository indexing
-
-Document processing
-
-Embeddings
-
-Hybrid Retrieval
-
----
-
-## Phase 3
-
-Agent Runtime
-
-Planner Agent
-
-Workflow Engine
-
-Memory
-
----
-
-## Phase 4
-
-MCP Integration
-
-GitHub
-
-Filesystem
-
-Docker
-
-AWS
-
----
-
-## Phase 5
-
-Engineering Agents
-
-Repository
-
-Knowledge
-
-Infrastructure
-
-Incident
-
-Code Review
-
----
-
-## Phase 6
-
-Human Approval
-
-Audit Logs
-
-Timeline
-
-Notifications
-
----
-
-## Phase 7
-
-Frontend Workspace
-
-Chat
-
-Projects
-
-Timeline
-
-Knowledge
-
-Repository Explorer
-
-Approval Queue
-
----
-
-## Phase 8
-
-Observability
-
-Metrics
-
-Tracing
-
-Monitoring
-
-Performance
-
----
-
-# 19. Project Principles
-
-* Local-first AI
-* Modular Architecture
-* Production-quality Code
-* Clean Architecture
-* SOLID Principles
-* Extensible Agent System
-* Tool-driven Reasoning
-* Human-controlled Execution
-* Scalable Design
-* Security by Default
-
----
-
-# 20. Repository Structure
-
-```text
-backend/
-frontend/
-infra/
-docs/
-
-README.md
-ABOUT.md
-AGENTS.md
-```
-
----
-
-# 21. Future Roadmap
-
-* GraphRAG
-* Neo4j
-* Temporal Workflow Engine
-* Kubernetes Integration
-* Terraform Integration
-* Slack Integration
-* Jira Integration
-* Multi-tenant SaaS
-* RBAC
-* Real-time Collaboration
-* AI Analytics Dashboard
-* Agent Marketplace
-
----
-
-# 22. Definition of Success
-
-Aegis AI should demonstrate:
-
-* Modern AI Engineering practices
-* Production-ready architecture
-* Multi-agent orchestration
-* Enterprise software engineering
-* AI-assisted software lifecycle automation
-
-The project should be suitable as a flagship portfolio application and reflect the standards expected of senior AI engineering teams.

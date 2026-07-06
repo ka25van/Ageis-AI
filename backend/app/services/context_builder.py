@@ -90,6 +90,7 @@ class ProjectContext:
     workflow_state: Dict = field(default_factory=dict)
     task_description: str = ""
     step_input: Dict = field(default_factory=dict)
+    repository_id: Optional[UUID] = None
 
 
 # Configurable truncation limits
@@ -168,6 +169,7 @@ class ContextBuilder:
             entry_points=entry_points[:10],
             semantic_memory=semantic_memory,
             task_description=task_description,
+            repository_id=repository_id,
         )
         return ctx
 

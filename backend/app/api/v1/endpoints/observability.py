@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.di import get_db_session
@@ -7,14 +8,14 @@ from app.services.observability import ObservabilityService, get_observability_s
 router = APIRouter(prefix="/observability", tags=["observability"])
 
 
-@router.get("/metrics")
+@router.get("/metrics", response_class=PlainTextResponse)
 async def get_metrics(
     db: AsyncSession = Depends(get_db_session),
     service: ObservabilityService = Depends(get_observability_service),
 ):
     """Get Prometheus metrics."""
     metrics = await service.get_metrics()
-    return metrics
+    return PlainTextResponse(metrics, media_type="text/plain; version=0.0.4")
 
 
 @router.get("/tracing")

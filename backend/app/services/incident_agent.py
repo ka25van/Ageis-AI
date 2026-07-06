@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 from uuid import UUID
 from collections import Counter
 import json
@@ -20,7 +20,8 @@ class IncidentAgent:
         self.llm = llm
 
     async def process(self, context: ProjectContext) -> AgentResult:
-        result = await self.analyze_incidents(context.project_id)
+        rid = context.repository_id or context.project_id
+        result = await self.analyze_incidents(rid)
         result_text = result.get("analysis", json.dumps(result))
         return AgentResult(
             result=result_text,
@@ -141,6 +142,43 @@ Format as JSON with keys: recommendations (list of strings), priority_issues (li
             "total_issues": sum(categories.values()),
             "error_details": error_contexts[:10],
             **parsed,
+        }
+
+
+    async def analyze_alert(self, alert_body: str) -> Dict:
+        """Analyze a Prometheus alert text directly and produce structured output.
+        
+        Unlike analyze_incidents/root_cause_analysis, this does NOT require a
+        repository — it works purely on the alert text via LLM.
+        Returns root causes, impact, and remediation steps.
+        """
+        system_prompt = """You are a senior SRE analyzing a Prometheus alert.
+Return ONLY valid JSON with these exact keys:
+- root_cause (str): what is likely causing this alert
+- impact (str): what systems/functionality are affected
+- severity (str): critical|high|medium|low
+- remediation_steps (list of str): actionable step-by-step remediation
+- prevention (list of str): steps to prevent recurrence
+- confidence (float): 0.0 to 1.0"""
+        try:
+            result = await self.llm.generate(system_prompt, alert_body)
+            parsed = json.loads(result)
+        except json.JSONDecodeError:
+            parsed = {}
+        except Exception as e:
+            parsed = {}
+
+        return {
+            "incidents": [],
+            "total_incidents": 1,
+            "analysis": parsed.get("root_cause", alert_body[:200]),
+            "summary": parsed.get("impact", "")[:300],
+            "root_causes": [parsed.get("root_cause", "Unknown")] if parsed.get("root_cause") else [],
+            "impact_analysis": parsed.get("impact", ""),
+            "remediation_plan": parsed.get("remediation_steps", []),
+            "prevention_strategies": parsed.get("prevention", []),
+            "severity": parsed.get("severity", "medium"),
+            "confidence": parsed.get("confidence", 0.5),
         }
 
 

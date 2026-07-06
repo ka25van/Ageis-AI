@@ -69,7 +69,7 @@ class ObservabilityService:
             """)
         )
         stats = result.fetchone()
-        stats_dict = dict(stats) if stats else {}
+        stats_dict = dict(stats._mapping) if stats else {}
 
         # Get agent type breakdown
         result = await self.db.execute(
@@ -80,13 +80,21 @@ class ObservabilityService:
             """)
         )
         agents = result.fetchall()
+        agent_counts = {}
+        for a in agents:
+            agent_counts[a.agent_type] = a.count
+
+        # Sync Prometheus gauges with current DB state
+        running_count = stats_dict.get("running", 0)
+        failed_count = stats_dict.get("failed", 0)
+        active_runs.set(running_count)
 
         return {
             "total_runs": stats_dict.get("total_runs", 0),
             "completed": stats_dict.get("completed", 0),
-            "failed": stats_dict.get("failed", 0),
-            "running": stats_dict.get("running", 0),
-            "agent_counts": {a[0]: a[1] for a in agents},
+            "failed": failed_count,
+            "running": running_count,
+            "agent_counts": agent_counts,
         }
 
 

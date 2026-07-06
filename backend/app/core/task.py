@@ -8,10 +8,10 @@ class TaskSource(str, Enum):
     CHAT = "chat"
     API = "api"
     WEBHOOK_GITHUB = "webhook_github"
+    PROMETHEUS = "prometheus"
 
     # Future sources (not yet implemented):
     # JENKINS = "jenkins"
-    # PROMETHEUS = "prometheus"
     # CLOUDWATCH = "cloudwatch"
     # SLACK = "slack"
     # JIRA = "jira"
@@ -22,9 +22,9 @@ class TaskType(str, Enum):
     QUESTION = "question"
     ANALYSIS = "analysis"
     ACTION = "action"
+    INCIDENT = "incident"
 
     # Future types (not yet implemented):
-    # INCIDENT = "incident"
     # DEPLOYMENT = "deployment"
     # CODE_REVIEW = "code_review"
 

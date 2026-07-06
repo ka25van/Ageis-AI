@@ -29,12 +29,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/* \
     && addgroup --system --gid 1001 app \
     && adduser --system --uid 1001 --gid 1001 app
 
 COPY --from=builder /wheels /wheels
-RUN pip install --no-cache-dir --find-links=/wheels aegis-backend \
+RUN pip install --no-cache-dir --no-index --find-links=/wheels aegis-backend \
     && rm -rf /wheels
 
 COPY --chown=app:app app ./app
