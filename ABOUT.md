@@ -1,576 +1,1040 @@
 # Aegis AI — Full Application Overview
 
-An open-source Agentic AI Engineering & AIOps Platform. Aegis AI ingests code repositories and documents, analyzes them via LLM-powered agents, supports conversational task routing, human-in-the-loop approvals, and a three-tier memory system — all running locally via Docker.
+An open-source Agentic AI Engineering & AIOps Platform. Aegis AI ingests code repositories and documents, analyzes them via LLM-powered agents, supports conversational task routing, human-in-the-loop approvals, a three-tier memory system, and AIOps alert ingestion with automated LLM root-cause analysis — all running locally via Docker.
 
 ---
 
 ## 1. Architecture Overview
 
 ```
-                        ┌─────────────┐
-                        │   Browser    │
-                        │  :80 (prod)  │
-                        │ :5173 (dev)  │
-                        └──────┬──────┘
-                               │ HTTP
-                               ▼
-                    ┌──────────────────┐
-                    │  Nginx (frontend) │
-                    │  Serves SPA      │
-                    │  /api/v1 -> back │
-                    └────────┬─────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              │              │              │
-              ▼              ▼              ▼
-      ┌────────────┐ ┌──────────┐ ┌──────────────┐
-      │  Backend   │ │  Redis   │ │   Postgres   │
-      │  :8000     │ │  :6379   │ │   :5432      │
-      │  FastAPI   │ │  Cache   │ │   pgvector   │
-      └─────┬──────┘ └──────────┘ └──────────────┘
-            │
-            ▼
-      ┌──────────────┐
-      │   Ollama     │  (host machine, not containerized)
-      │  :11434      │
-      │  llama3.2    │
-      │  nomic-embed │
-      └──────────────┘
+                         ┌─────────────┐
+                         │   Browser    │
+                         │  :80 (prod)  │
+                         │ :5173 (dev)  │
+                         └──────┬──────┘
+                                │ HTTP
+                                ▼
+                     ┌──────────────────┐
+                     │  Nginx (frontend) │
+                     │  Serves SPA      │
+                     │  /api/v1 -> back │
+                     └────────┬─────────┘
+                              │
+               ┌──────────────┼──────────────┐
+               │              │              │
+               ▼              ▼              ▼
+       ┌────────────┐ ┌──────────┐ ┌──────────────┐
+       │  Backend   │ │  Redis   │ │   Postgres   │
+       │  :8000     │ │  :6379   │ │   :5432      │
+       │  FastAPI   │ │  Cache   │ │   pgvector   │
+       └─────┬──────┘ └──────────┘ └──────────────┘
+             │
+             ▼
+       ┌──────────────┐
+       │   Ollama     │  (host machine, not containerized)
+       │  :11434      │
+       │  llama3.2    │
+       │  nomic-embed │
+       └──────────────┘
+
+┌─────────────────┐
+│  Prometheus      │  Docker container, scrapes backend every 15s
+│  :9090           │  via GET /api/v1/observability/metrics
+│  Alertmanager →  │  POSTs webhook to /api/v1/alerts/webhook
+└─────────────────┘
 ```
 
-4 Docker containers managed via `docker-compose.yml` + `docker-compose.prod.yml`.
+5 Docker containers: postgres, redis, backend, frontend, prometheus.  
+Ollama runs on the host machine (not containerized) — backend connects via `host.docker.internal:11434`.
 
 ---
 
 ## 2. Backend (FastAPI + Python 3.11)
 
 ### 2.1 Tech Stack
-- **Framework**: FastAPI (async), Uvicorn
-- **ORM**: SQLAlchemy 2.0 (async), Alembic migrations
-- **Database**: PostgreSQL 16 + pgvector extension
-- **Cache**: Redis 7 (AOF persistence)
-- **LLM Integration**: LangChain (ChatOllama / ChatOpenAI)
-- **Auth**: JWT (access + refresh tokens via python-jose), Argon2 password hashing
-- **Vector Search**: pgvector (IVFFlat index, 768-dim embeddings)
-- **Structured Logging**: structlog
-- **Observability**: Prometheus metrics (Counter, Histogram, Gauge)
-- **Background Tasks**: asyncio tasks
+- **Framework**: FastAPI (async), Uvicorn (single worker) — `backend/app/main.py:103`
+- **ORM**: SQLAlchemy 2.0 (async), Alembic migrations — `backend/app/db/session.py:6`
+- **Database**: PostgreSQL 16 + pgvector extension — `backend/app/db/session.py`
+- **Cache**: Redis 7 (AOF persistence) — `backend/app/services/redis_client.py`
+- **LLM Integration**: LangChain `ChatOllama` / `ChatOpenAI` — `backend/app/services/llm_service.py:27`
+- **Auth**: JWT access+refresh tokens (python-jose), Argon2 hashing — `backend/app/api/v1/endpoints/auth.py`
+- **Vector Search**: pgvector IVFFlat index, 768-dim embeddings — `backend/app/services/embeddings.py:23`
+- **Structured Logging**: structlog — `backend/app/core/logging.py`
+- **Observability**: prometheus_client — `backend/app/services/observability.py:7`
+- **Background Tasks**: asyncio.create_task — `backend/app/api/v1/endpoints/alerts.py:167`
 
-### 2.2 API Endpoints (68 total under `/api/v1`)
+### 2.2 Key Files by Layer
+
+| Layer | File | Purpose |
+|-------|------|---------|
+| **Entrypoint** | `backend/app/main.py` | App factory, middleware, imports MCP modules, router registration |
+| **Config** | `backend/app/core/config.py` | Pydantic Settings — reads `.env`, all defaults |
+| **DI** | `backend/app/core/di.py` | FastAPI Depends helpers for DB session |
+| **DB Session** | `backend/app/db/session.py` | `create_async_engine` with `pool_pre_ping=True, pool_recycle=3600` |
+| **DB Base** | `backend/app/db/base.py` | SQLAlchemy declarative Base |
+| **Migrations** | `backend/app/alembic/` | Alembic migration scripts |
+| **Middleware** | `backend/app/main.py:74` | `@app.middleware("http")` — logs request duration, no metric recording |
+| **Models** | `backend/app/models/` | SQLAlchemy ORM models (user, project, repository, document, agent, memory) |
+| **Endpoints** | `backend/app/api/v1/endpoints/` | 68+ API routes across routers |
+| **Router index** | `backend/app/api/v1/router.py` | Aggregates all sub-routers |
+| **Services** | `backend/app/services/` | Business logic, agents, LLM, observability, memory |
+| **MCP Tools** | `backend/app/mcp/` | GitHub, Filesystem, Docker, AWS tool adapters |
+| **Execution** | `backend/app/services/workflow_engine.py` | DAG orchestration, step dispatch |
+| **Planning** | `backend/app/services/planner.py` | Task decomposition, IntentRouter |
+
+### 2.3 API Endpoints (68+ under `/api/v1`)
+
+All routers are registered in `backend/app/api/v1/router.py`.
 
 #### Health (`/health`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | /health | Root health check |
-| GET | /health/db | Database connectivity |
-| GET | /health/redis | Redis connectivity |
+| Method | Path | File | Purpose |
+|--------|------|------|---------|
+| GET | /health | `endpoints/health.py:13` | Returns `{"status":"ok"}` — Docker healthcheck target |
+| GET | /health/db | `endpoints/health.py:19` | Tests async DB connectivity |
+| GET | /health/redis | `endpoints/health.py:30` | Tests Redis ping |
 
 #### Auth (`/auth`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | /auth/register | Register new user |
-| POST | /auth/login | Login with email/password |
-| POST | /auth/refresh | Refresh JWT token pair |
-| GET | /auth/me | Get current user profile |
-| PATCH | /auth/me | Update profile (full_name) |
-| POST | /auth/change-password | Change password |
-| GET | /auth/api-keys | List API keys |
-| POST | /auth/api-keys | Create API key |
-| DELETE | /auth/api-keys/{id} | Delete API key |
+| Method | Path | File | Purpose |
+|--------|------|------|---------|
+| POST | /auth/register | `endpoints/auth.py:98` | Argon2-hashed password, returns JWT pair |
+| POST | /auth/login | `endpoints/auth.py:134` | Email + password verification |
+| POST | /auth/refresh | `endpoints/auth.py:173` | 7-day refresh token → new access+refresh pair |
+| GET | /auth/me | `endpoints/auth.py:192` | Current user profile from token |
+| PATCH | /auth/me | `endpoints/auth.py:219` | Update full_name |
+| POST | /auth/change-password | `endpoints/auth.py:240` | Old password verified, new password hashed |
 
 #### Projects (`/projects`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | /projects | Create project |
-| GET | /projects | List all projects |
-| GET | /projects/{id} | Get project details |
-| PATCH | /projects/{id} | Update project |
-| DELETE | /projects/{id} | Delete project |
+| Method | Path | File | Purpose |
+|--------|------|------|---------|
+| POST | /projects | `endpoints/projects.py:25` | Create project (name, description) → DB insert |
+| GET | /projects | `endpoints/projects.py:47` | List all projects for current user |
+| GET | /projects/{id} | `endpoints/projects.py:56` | Single project with settings |
+| PATCH | /projects/{id} | `endpoints/projects.py:72` | Update name/description/settings |
+| DELETE | /projects/{id} | `endpoints/projects.py:84` | Cascade delete — repos, docs, runs, memory |
 
 #### Repositories (`/repositories`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | /repositories | Register repository |
-| GET | /repositories | List all repositories |
-| GET | /repositories/{id} | Get repository details |
-| POST | /repositories/{id}/ingest | Trigger file ingestion |
-| GET | /repositories/{id}/files | List repository files |
-| DELETE | /repositories/{id} | Delete repository |
+| Method | Path | File | Purpose |
+|--------|------|------|---------|
+| POST | /repositories | `endpoints/repositories.py:27` | Register repo url/branch → DB insert, async ingest |
+| GET | /repositories | `endpoints/repositories.py:45` | List all for project |
+| GET | /repositories/{id} | `endpoints/repositories.py:54` | Single repo details |
+| POST | /repositories/{id}/ingest | `endpoints/repositories.py:63` | Clones repo, reads files, stores `RepositoryFile` rows |
+| GET | /repositories/{id}/files | `endpoints/repositories.py:86` | Paginated file list + content |
+| DELETE | /repositories/{id} | `endpoints/repositories.py:105` | Remove repo and all files |
 
 #### Documents (`/documents`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | /documents/upload | Upload PDF/MD/TXT file |
-| POST | /documents/text | Create text document |
-| GET | /documents | List all documents |
-| GET | /documents/{id} | Get document with content |
-| GET | /documents/{id}/chunks | Get document chunks |
-| DELETE | /documents/{id} | Delete document |
+| Method | Path | File | Purpose |
+|--------|------|------|---------|
+| POST | /documents/upload | `endpoints/documents.py:34` | PDF/MD/TXT upload → parse + chunk |
+| POST | /documents/text | `endpoints/documents.py:89` | Create from raw text |
+| GET | /documents | `endpoints/documents.py:107` | List with pagination |
+| GET | /documents/{id} | `endpoints/documents.py:116` | Document + raw content |
+| GET | /documents/{id}/chunks | `endpoints/documents.py:126` | Chunks with embeddings |
+| DELETE | /documents/{id} | `endpoints/documents.py:143` | Cascade delete chunks |
 
 #### Embeddings (`/embeddings`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | /embeddings/documents/{id}/generate | Generate embeddings for document chunks |
-| POST | /embeddings/repositories/{id}/generate | Generate embeddings for repo files |
-| POST | /embeddings/search | Semantic search (cosine similarity) |
-| POST | /embeddings/hybrid-search | Hybrid search (semantic + ILIKE keyword) |
-
-#### Repository Analysis (`/analyze`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | /analyze/{id} | Full repository analysis (deps, APIs, architecture) |
-| GET | /analyze/{id}/dependencies | Dependency graph |
-| GET | /analyze/{id}/services | Service discovery + architecture |
+| Method | Path | File | Purpose |
+|--------|------|------|---------|
+| POST | /embeddings/documents/{id}/generate | `endpoints/embeddings.py:25` | Calls Ollama nomic-embed-text, stores vectors in `document_chunks.embedding` |
+| POST | /embeddings/repositories/{id}/generate | `endpoints/embeddings.py:52` | Embeds repo file contents |
+| POST | /embeddings/search | `endpoints/embeddings.py:76` | Cosine similarity via pgvector `<=>` operator, returns top-k |
+| POST | /embeddings/hybrid-search | `endpoints/embeddings.py:96` | Combines cosine similarity + ILIKE keyword match, weighted rank |
 
 #### Planner (`/planner`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | /planner/plan | Plan + execute a task via DAG |
-| POST | /planner/route | Route message to agents + execute |
-| POST | /planner/resume/{run_id} | Resume after HITL approval |
-| GET | /planner/runs/{run_id} | Get run status |
-| GET | /planner/runs/{run_id}/steps | Get run steps with results |
-
-#### Workflows (`/workflows`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | /workflows/runs | List agent runs |
-| POST | /workflows/execute | Execute custom workflow |
-| GET | /workflows/runs/{id}/state | Get workflow state |
-| POST | /workflows/runs/{id}/resume | Resume workflow |
-| POST | /workflows/runs/{id}/retry | Retry failed workflow |
+| Method | Path | File | Purpose |
+|--------|------|------|---------|
+| POST | /planner/plan | `endpoints/planner.py:91` | Old path: `PlannerAgent.plan_and_execute()` — LLM decomposes → LLM executes per step |
+| POST | /planner/route | `endpoints/planner.py:127` | New path: `IntentRouter` → `ExecutionPlan` → `PlanValidator` → `WorkflowEngine` — DAG-based |
+| POST | /planner/resume/{run_id} | `endpoints/planner.py:172` | Resume after HITL approval — loads run + pending steps |
+| GET | /planner/runs/{run_id} | `endpoints/planner.py:199` | Run status + input/output |
+| GET | /planner/runs/{run_id}/steps | `endpoints/planner.py:210` | All steps with results |
 
 #### Memory (`/memory`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | /memory/short-term/{run_id} | Store short-term memory |
-| GET | /memory/short-term/{run_id}/{key} | Read short-term memory |
-| POST | /memory/long-term | Store long-term memory (TTL key-value) |
-| GET | /memory/long-term/{key} | Read long-term memory |
-| POST | /memory/semantic | Store semantic memory (vector-embedded) |
-| GET | /memory/semantic | List semantic memory entries |
-| POST | /memory/search | Search semantic memory by similarity |
-| POST | /memory/conversation/{project_id} | Store chat message |
-| GET | /memory/conversation/{project_id} | Get conversation history |
-| DELETE | /memory/conversation/{project_id} | Clear conversation |
-| GET | /memory/runs/{run_id}/summary | Summarize a run |
+| Method | Path | File | Purpose |
+|--------|------|------|---------|
+| POST | /memory/short-term/{run_id} | `endpoints/memory.py:27` | Store key-value in AgentStep table |
+| GET | /memory/short-term/{run_id}/{key} | `endpoints/memory.py:40` | Retrieve by run_id + key |
+| POST | /memory/long-term | `endpoints/memory.py:54` | Key-value with TTL in LongTermMemory |
+| GET | /memory/long-term/{key} | `endpoints/memory.py:67` | Retrieve by key |
+| POST | /memory/semantic | `endpoints/memory.py:81` | Embed text + store in SemanticMemory |
+| POST | /memory/search | `endpoints/memory.py:94` | Cosine similarity search across SemanticMemory |
+| GET | /memory/runs/{run_id}/summary | `endpoints/memory.py:107` | Aggregates steps + memory for a run |
 
-#### MCP Tools (`/tools`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | /tools | List all registered MCP tools |
-| GET | /tools/{name} | Get tool metadata + schema |
-| POST | /tools/{name}/execute | Execute a tool |
-
-#### Repository Agent (`/repo-agent`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | /repo-agent/{id}/understand | LLM architecture analysis |
-| GET | /repo-agent/{id}/summary | Summarize architecture |
-| GET | /repo-agent/{id}/search | Search codebase |
-
-#### Knowledge Agent (`/knowledge`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | /knowledge/search | Retrieve docs + LLM answer |
-| POST | /knowledge/hybrid | Hybrid search + rank |
-| POST | /knowledge/rank | Re-rank results |
-
-#### Incident Agent (`/incidents`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | /incidents/analyze | Scan repo for error keywords + root cause |
-| POST | /incidents/root-cause | Deep root cause analysis |
-| POST | /incidents/recommendations | Remediation recommendations |
-
-#### Documentation Agent (`/docs`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | /docs/readme | Generate README.md |
-| POST | /docs/api | Generate API documentation |
-| POST | /docs/architecture | Generate architecture docs |
-
-#### Code Review Agent (`/code-review`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | /code-review/pr | PR review (security + quality) |
-| POST | /code-review/security | Security vulnerability audit |
-| POST | /code-review/best-practices | Best practices analysis |
-
-#### Approvals (`/approvals`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | /approvals/{run_id} | Request HITL approval |
-| POST | /approvals/{id}/approve | Approve a pending action |
-| POST | /approvals/{id}/reject | Reject + provide reason |
-| GET | /approvals/pending | List pending approvals |
-| GET | /approvals/audit | Approval audit log |
+#### Alerts (`/alerts`)
+| Method | Path | File | Purpose |
+|--------|------|------|---------|
+| POST | /alerts/webhook | `endpoints/alerts.py:102` | Prometheus Alertmanager receiver — stores alert in SemanticMemory, fires background LLM analysis |
+| GET | /alerts/history | `endpoints/alerts.py:166` | Recent alert entries from SemanticMemory |
+| GET | /alerts/stats | `endpoints/alerts.py:180` | Firing/resolved alert counts |
 
 #### Observability (`/observability`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | /observability/metrics | Prometheus metrics |
-| GET | /observability/tracing | Execution tracing data |
-| GET | /observability/dashboard | Dashboard aggregate stats |
-| POST | /observability/record | Record a request metric |
+| Method | Path | File | Purpose |
+|--------|------|------|---------|
+| GET | /observability/metrics | `endpoints/observability.py:23` | Prometheus `generate_latest(REGISTRY)` — text/plain format |
+| GET | /observability/tracing | `endpoints/observability.py:38` | Latest AgentStep records from DB |
+| GET | /observability/dashboard | `endpoints/observability.py:52` | SQL aggregates from agent_runs + Prometheus gauge sync |
+| POST | /observability/record | `endpoints/observability.py:69` | Manually record a request metric (testing only) |
 
-#### Deploy Agent (`/deploy`)
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | /deploy/analyze | Analyze Docker/CI/CD/infra configs |
+#### MCP Tools (`/tools`)
+| Method | Path | File | Purpose |
+|--------|------|------|---------|
+| GET | /tools | `endpoints/tools.py:18` | List all registered tools from ToolRegistry singleton |
+| GET | /tools/{name} | `endpoints/tools.py:27` | Tool description + JSON input schema |
+| POST | /tools/{name}/execute | `endpoints/tools.py:37` | Dispatch via `registry.execute(name, args)` → runs subprocess |
+
+#### All Agent Endpoints
+| Agent | Prefix | File | Methods |
+|-------|--------|------|---------|
+| Repository | /repo-agent | `endpoints/repo_agent.py` | GET /{id}/understand, /{id}/summary, /{id}/search |
+| Knowledge | /knowledge | `endpoints/knowledge_agent.py` | POST /search, /hybrid, /rank |
+| Incident | /incidents | `endpoints/incident_agent.py` | POST /analyze, /root-cause, /recommendations |
+| Documentation | /docs | `endpoints/documentation_agent.py` | POST /readme, /api, /architecture |
+| Code Review | /code-review | `endpoints/code_review_agent.py` | POST /pr, /security, /best-practices |
+| Deploy | /deploy | `endpoints/deploy_agent.py` | POST /analyze |
 
 ---
 
-## 3. Database Schema (8 tables, pgvector)
+## 3. Database Schema (12 tables, pgvector)
 
 ### 3.1 Tables
 
-| Table | Purpose | Key Columns |
-|-------|---------|-------------|
-| `users` | User accounts | id, email, hashed_password, full_name, is_active, is_superuser |
-| `api_keys` | API keys per user | id, user_id (FK), key_hash, key_prefix, is_active, expires_at |
-| `projects` | Workspace projects | id, name, description, owner_id (FK), settings (JSONB) |
-| `repositories` | Git repositories | id, project_id (FK), url, branch, provider, indexing_status |
-| `repository_files` | Files inside repos | id, repository_id (FK), path, language, size_bytes, content |
-| `documents` | Uploaded PDFs/MD/TXT | id, project_id (FK), title, source_type, content |
-| `document_chunks` | Chunked docs with embeddings | id, document_id (FK), chunk_index, content, embedding (VECTOR(768)) |
-| `agent_runs` | Planner/agent execution runs | id, project_id, agent_type, status, input/output (JSONB) |
-| `agent_steps` | Individual steps in a run | id, run_id (FK), step_index, step_type, tool_name, status |
-| `approvals` | HITL approval records | id, run_id (FK), action_type, action_data (JSONB), status, reviewed_by |
-| `long_term_memory` | TTL-based key-value store | id, user_id, key, value (JSONB), expires_at |
-| `semantic_memory` | Vector-embedded text | id, text, embedding (VECTOR(768)), metadata (JSONB) |
+| Table | File | Purpose | Key Columns |
+|-------|------|---------|-------------|
+| `users` | `models/user.py` | User accounts | id (UUID), email, hashed_password, full_name, is_active, is_superuser |
+| `api_keys` | `models/user.py:54` | API keys per user | id, user_id (FK), key_hash, key_prefix, is_active, expires_at |
+| `projects` | `models/project.py` | Workspace projects | id, name, description, owner_id (FK), settings (JSONB) |
+| `repositories` | `models/project.py:27` | Git repositories | id, project_id (FK), url, branch, provider, indexing_status |
+| `repository_files` | `models/project.py:48` | Files inside repos | id, repository_id (FK), path, language, size_bytes, content (TEXT) |
+| `documents` | `models/document.py` | Uploaded PDFs/MD/TXT | id, project_id (FK), title, source_type, content |
+| `document_chunks` | `models/document.py:36` | Chunked docs with embeddings | id, document_id (FK), chunk_index, content, embedding (VECTOR(768)) |
+| `agent_runs` | `models/agent.py` | Planner/agent execution runs | id (UUID), project_id, agent_type, status, input/output (JSONB) |
+| `agent_steps` | `models/agent.py:29` | Individual steps in a run | id, run_id (FK), step_index, step_type, tool_name, status, duration_ms |
+| `approvals` | `models/agent.py:51` | HITL approval records | id, run_id (FK), action_type, action_data (JSONB), status, reviewed_by |
+| `long_term_memory` | `models/memory.py` | TTL-based key-value store | id, user_id, key, value (JSONB), expires_at |
+| `semantic_memory` | `models/memory.py:27` | Vector-embedded text | id, text, embedding (VECTOR(768)), metadata (JSONB), created_at |
 
 ### 3.2 Embedding Dimensions
 
-The vector dimension is 768 (nomic-embed-text output). Two IVFFlat indexes exist on `document_chunks.embedding` and `semantic_memory.embedding`.
+Vector dimension is 768 (`nomic-embed-text` output). Two IVFFlat indexes:
+- `document_chunks_embedding_idx` on `document_chunks.embedding`
+- `semantic_memory_embedding_idx` on `semantic_memory.embedding`
+
+Defined in `backend/app/models/document.py:42` and `backend/app/models/memory.py:33`.
 
 ---
 
-## 4. Agent System
+## 4. LLM Integration
 
-### 4.1 Architecture
+### 4.1 LLMService (`backend/app/services/llm_service.py`)
 
-```
-User Task
-    │
-    ▼
-┌──────────────┐
-│ IntentRouter │  Keyword + LLM fallback routing
-│              │  Returns ExecutionPlan (DAG of steps)
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│ PlanValidator│  Validates: cycles, missing deps, capability availability
-│              │  Checks approval requirements
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│WorkflowEngine│  Executes DAG via topological sort (Kahn's algorithm)
-│              │  Independent steps run in parallel
-│              │  Per-step: retries with backoff, timeout, rollback
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│CapabilityReg.│  Routes to agent / MCP tool / REST / Python
-│ + Adapters   │  Normalizes all to (context) -> AgentResult
-└──────────────┘
+Singleton service wrapping LangChain:
+
+```python
+class LLMService:
+    def _get_model(self) -> BaseChatModel:
+        # Ollama (default): ChatOllama(model=llama3.2, base_url=host.docker.internal:11434)
+        # OpenAI: ChatOpenAI(model=gpt-4, api_key=...)
+    async def generate(system_prompt, user_prompt) -> str
+        # model | StrOutputParser → ainvoke
+    async def generate_with_context(system_prompt, context, query) -> str
+        # Same, but with context injected into HumanMessage
 ```
 
-### 4.2 Agents (7 specialized + 1 meta-planner)
+### 4.2 EmbeddingService (`backend/app/services/embeddings.py`)
 
-| Agent | File | Purpose |
-|-------|------|---------|
-| **Planner Agent** | `planner.py` | Meta-agent. Decomposes tasks into ExecutionPlan DAG. Integrates memory + MCP tools. |
-| **Repository Agent** | `repository_agent.py` | Analyzes codebases: architecture, tech stack, design patterns, code search |
-| **Knowledge Agent** | `knowledge_agent.py` | Hybrid search over documents. LLM Q&A with memory context injection |
-| **Incident Agent** | `incident_agent.py` | Error keyword scanning + LLM root cause + remediation |
-| **Documentation Agent** | `documentation_agent.py` | Generates README, API docs, architecture docs in markdown |
-| **Code Review Agent** | `code_review_agent.py` | Security audit, code quality, best practices via LLM |
-| **Deploy Agent** | `deploy_agent.py` | Analyzes Dockerfiles, compose, CI/CD, infra configs |
+Generates 768-dim vectors via `Ollama.generate(model="nomic-embed-text")`:
 
-### 4.3 ExecutionPlan → ExecutionStep
+```python
+class EmbeddingService:
+    async def generate_embeddings(texts) -> List[List[float]]
+        # POST http://host.docker.internal:11434/api/embeddings
+    async def semantic_search(query, limit, threshold, table_name)
+        # pgvector cosine similarity: embedding <=> :query_embedding
+```
 
-The contract between Planner and WorkflowEngine:
+### 4.3 Models Used
+
+| Model | Type | Provider | Purpose |
+|-------|------|----------|---------|
+| `llama3.2` | Chat | Ollama (host) | All agent LLM calls, alert analysis, intent routing |
+| `nomic-embed-text` | Embedding | Ollama (host) | All vector embeddings (documents, memory, alerts) |
+
+---
+
+## 5. Agent System — Pin-to-Pin
+
+### 5.1 Execution Flow
+
+```
+User types message in Chat (/agents) or POST /planner/route
+        │
+        ▼
+┌────────────────────────────────────────────────┐
+│ IntentRouter (backend/app/services/planner.py) │
+│                                                │
+│ 1. KEYWORD_RULES — 17 rules matched in order:  │
+│    - "architecture", "structure" → repository  │
+│    - "question", "what", "how" → knowledge     │
+│    - "error", "crash", "incident" → incident   │
+│    - "readme", "documentation" → documentation │
+│    - "review", "pr", "code quality" → code_rev │
+│    - "deploy", "docker", "kubernetes" → deploy │
+│    - "hello", "hi" → direct LLM response       │
+│                                                │
+│ 2. Falls back to LLM classification (generate) │
+│    if no keyword match                          │
+│                                                │
+│ 3. Returns ExecutionPlan dataclass with steps   │
+└──────────────────────┬─────────────────────────┘
+                       │
+                       ▼
+┌────────────────────────────────────────────────┐
+│ PlanValidator (backend/app/services/           │
+│               plan_validator.py)               │
+│                                                │
+│ 1. Cycle detection (DFS on depends_on graph)   │
+│ 2. Missing capability check in CapabilityReg.  │
+│ 3. Orphan reference check                      │
+│ 4. Approval consistency check                  │
+└──────────────────────┬─────────────────────────┘
+                       │
+                       ▼
+┌────────────────────────────────────────────────┐
+│ WorkflowEngine.execute_plan()                  │
+│ (backend/app/services/workflow_engine.py)      │
+│                                                │
+│ 1. Topological sort (Kahn's algorithm)         │
+│ 2. For each step in order:                     │
+│    a. Check dependency completion              │
+│    b. Build ProjectContext via ContextBuilder  │
+│    c. Resolve capability from CapabilityReg.   │
+│    d. Create AgentStep record (status=running) │
+│    e. ExecutionRuntime.execute_step() → retry  │
+│    f. Record result (completed/failed)         │
+│    g. Handle rollback if failed + defined      │
+│ 3. Return merged step results                  │
+└──────────────────────┬─────────────────────────┘
+                       │
+                       ▼
+┌────────────────────────────────────────────────┐
+│ CapabilityRegistry.resolve(step.capability)    │
+│ (backend/app/services/capability_registry.py)  │
+│                                                │
+│ Returns Capability with executor callable:     │
+│   agent: agent.process(context) → AgentResult  │
+│   mcp:   adapt_mcp(name, registry)(context)    │
+│   rest:  adapt_rest()(context) → stub          │
+│   python: adapt_python()(context) → stub       │
+└────────────────────────────────────────────────┘
+```
+
+### 5.2 Agents Registered at Startup
+
+Registered in `backend/app/services/workflow_engine.py:476` — `get_workflow_engine()` factory:
+
+```python
+# Line 476-500
+registry.register("repository", "Analyze code structure", adapt_agent(repo_agent))
+registry.register("knowledge", "Search docs & answer", adapt_agent(knowledge_agent))
+registry.register("incident", "Find errors & root cause", adapt_agent(incident_agent))
+registry.register("documentation", "Generate docs", adapt_agent(doc_agent))
+registry.register("code_review", "Review code quality", adapt_agent(code_review_agent))
+registry.register("deploy", "Analyze deployment configs", adapt_agent(deploy_agent))
+
+# MCP tools registered from ToolRegistry (lines 482-493)
+for tool in mcp_registry.list_tools():
+    registry.register(tool["name"], tool["description"], adapt_mcp(tool["name"], mcp_registry))
+
+# Stubs (lines 494-499)
+registry.register("rest_call", "Make HTTP request", adapt_rest())
+registry.register("python_exec", "Run Python snippet", adapt_python())
+```
+
+**23 capabilities total**: 6 agents + 15 MCP tools + 2 stubs.
+
+### 5.3 Agent Base Interface
+
+All agents use `AgentResult` dataclass (`backend/app/services/agent_base.py`):
 
 ```python
 @dataclass
-class ExecutionStep:
-    id: str                           # Unique step ID
-    name: str                         # Human-readable name
-    capability: str                   # Capability name to dispatch (e.g. "repository", "knowledge")
-    input: Dict                       # Step-specific params (becomes step_input in ProjectContext)
-    depends_on: List[str]            # DAG dependencies (IDs of predecessor steps)
-    requires_approval: bool
-    retry_policy: Optional[RetryPolicy]  # max_retries, retry_delay, backoff_multiplier
-    timeout_seconds: Optional[int]
-    rollback_step: Optional[str]      # ID of the rollback step
-
-@dataclass  
-class ExecutionPlan:
-    intent: str
-    task_description: str
-    steps: List[ExecutionStep]
-    approvals_required: List[str]     # Step IDs needing approval
-    rollback_strategy: Optional[RollbackStrategy]
+class AgentResult:
+    result: str               # Main output text
+    confidence: float         # 0.0-1.0
+    recommendations: List[str] # Actionable next steps
+    follow_up_actions: List[str]
+    details: Dict             # Structured inner data
 ```
 
-### 4.4 CapabilityRegistry + Execution Adapters
+Each agent's `.process(context: ProjectContext) -> AgentResult` reads `context.project` (with `step_input`, `repository_id`) and returns structured results.
 
-A single `CapabilityRegistry` holds all dispatch targets. Four adapter factories normalize execution types:
+### 5.4 ProjectContext (`backend/app/services/context_builder.py`)
 
-| Adapter | Factory | Normalizes |
-|---------|---------|------------|
-| `adapt_agent` | Identity wrapper | Agent `.process()` methods already match `(context) -> AgentResult` |
-| `adapt_mcp` | Captures `tool_name`, dispatches via MCP registry | Splits `step_input` as tool params |
-| `adapt_rest` | Stub | Makes HTTP calls |
-| `adapt_python` | Stub | Executes Python snippets |
-
-At startup, `get_workflow_engine()` registers:
-- **6 agents** (repository, knowledge, incident, documentation, code_review, deploy)
-- **15 MCP tools** (3 GitHub + 4 Filesystem + 4 Docker + 4 AWS)
-- **2 stubs** (rest_call, python_exec)
-
-### 4.5 MCP Tool System
-
-14 tools across 4 adapters, all registered in `ToolRegistry` (singleton):
-
-| Adapter | Tools |
-|---------|-------|
-| **GitHub** | clone_repository, create_branch, create_pull_request |
-| **Filesystem** | read_file, write_file, search_files, list_directory |
-| **Docker** | build_image, run_container, stop_container, get_logs |
-| **AWS** | s3_list_buckets, s3_upload_file, ec2_list_instances, cloudwatch_get_metrics |
-
-Tools are registered at app startup via `import app.mcp.github` etc. in `main.py`.
-
-### 4.6 Memory System (Three-Tier)
-
-| Tier | Storage | TTL | Purpose |
-|------|---------|-----|---------|
-| **Short-term** | `AgentStep` DB records | Per-run | Current execution context (inputs, outputs, status per step) |
-| **Long-term** | `LongTermMemory` table | Configurable TTL | Persistent key-value across sessions |
-| **Semantic** | `SemanticMemory` table + pgvector | Forever | Vector-embedded text for similarity search |
-
-Integration points:
-- **PlannerAgent**: Injects matching semantic memory into LLM prompt before planning; stores results after completion
-- **KnowledgeAgent**: Searches semantic memory for past Q&A before calling LLM; stores new Q&A after
-
----
-
-## 5. Frontend (React + Vite + Tailwind)
-
-### 5.1 Tech Stack
-- React 18, TypeScript 5.5
-- Vite 5.4 (build tool), React Router 6.26
-- Tailwind CSS 3.4, Lucide React icons
-- shadcn/ui component system (tailwind-merge + clsx)
-
-### 5.2 Page Routes (10 pages)
-
-| Path | Component | Auth | Purpose |
-|------|-----------|------|---------|
-| `/login` | Login.vue-style | No | Email/password login |
-| `/register` | Register | No | User registration |
-| `/dashboard` | Dashboard | Yes | Stats overview (projects, repos, runs) |
-| `/projects` | Projects | Yes | CRUD project management |
-| `/repositories` | Repositories | Yes | Repository list + ingest trigger |
-| `/knowledge` | Knowledge | Yes | Document browser, chunk viewer, semantic memory search |
-| `/agents` | Agents | Yes | Agent action cards + planner execution |
-| `/chat` | Chat | Yes | Conversational planner with expandable results |
-| `/approvals` | ApprovalQueue | Yes | HITL approval/reject actions |
-| `/settings` | Settings | Yes | Profile, password change, API key management |
-
-### 5.3 API Client (`lib/api.ts`)
-
-Typed fetch wrapper with:
-- JWT Bearer token injection
-- Auto-refresh on 401 (uses refresh token)
-- Token persistence in localStorage
-- Typed API objects for: authApi, projectsApi, repositoriesApi, documentsApi, plannerApi, repoAgentApi, knowledgeAgentApi, incidentAgentApi, docAgentApi, codeReviewApi, deployApi, approvalsApi, memoryApi, agentRunsApi
-
----
-
-## 6. Deployment
-
-### 6.1 Docker Compose (Local Dev)
-
-File: `docker-compose.yml`
-
-| Service | Image | Port | Depends On | Healthcheck |
-|---------|-------|------|------------|-------------|
-| postgres | pgvector/pgvector:pg16 | 5432 | - | pg_isready |
-| redis | redis:7-alpine | 6379 | - | redis-cli ping |
-| backend | Custom Dockerfile | 8000 | postgres, redis | HTTP /api/v1/health |
-| frontend | Custom Dockerfile | 80 | backend | curl localhost:80 |
-
-Ollama runs on the **host machine** (not containerized). Backend connects via `host.docker.internal:11434`.
-
-### 6.2 Production Overlay
-
-File: `docker-compose.prod.yml`
-- Restricts port exposure (containers not exposed to host by default)
-- Requires `SECRET_KEY` env var (will fail if unset)
-- Mounts `init-db.sql` to auto-create pgvector extensions
-- Sets `LOG_LEVEL=WARNING`
-- Sets CORS origins to production domain
-
-### 6.3 Backend Dockerfile (multi-stage)
-
-- **Builder**: `python:3.11-slim`, installs build-essential + libpq-dev, builds wheels
-- **Runner**: `python:3.11-slim`, installs libpq-dev + curl, installs from wheels, copies app code
-- Runs as non-root `app` user
-- CMD: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
-
-### 6.4 Frontend Dockerfile (multi-stage)
-
-- **Builder**: `node:20-alpine`, installs deps, builds with `VITE_API_URL=/api/v1`
-- **Runner**: `nginx:1.27-alpine`, serves built static files
-- Nginx proxies `/api/v1/` to `backend:8000`
-
-### 6.5 Nginx Config
-
-- Serves SPA with fallback: `try_files $uri $uri/ /index.html`
-- Proxies `/api/v1/` to `http://backend:8000/api/v1/`
-- Gzip compression enabled for CSS/JS/JSON/SVG
-
-### 6.6 Local Development
-
-```powershell
-# Backend (requires venv + Ollama running locally)
-cd backend
-.\venv\Scripts\python -m uvicorn app.main:app --reload --port 8000
-
-# Frontend (dev server with hot reload)
-cd frontend
-npm run dev    # Starts on :5173, proxies /api to localhost:8000
+```python
+@dataclass
+class ProjectContext:
+    project_id: UUID
+    repository_id: Optional[UUID]
+    name: str
+    description: str
+    repositories: List[Dict]
+    documents: List[Dict]
+    files: List[Dict]
+    user_id: UUID
+    step_input: Dict                 # Step-specific input params (for MCP dispatch)
+    settings: Optional[ProjectSettings]
 ```
 
-### 6.7 Production via Docker
+Built by `ContextBuilder.build()` — runs 3 DB queries (repositories, documents, files) and 2 embedding calls (embed the query, search semantic memory). When called with an existing EngineeringContext (Tier 1 path), uses `dataclasses.replace()` to clone with updated `step_input` only — avoids redundant queries.
 
-```powershell
-# Build and start all services
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+### 5.5 Execution Adapters (`backend/app/services/execution_adapters.py`)
 
-# View logs
-docker compose logs -f backend
-docker compose logs -f frontend
+```python
+def adapt_agent(agent) -> Callable:
+    # Agent.process() already matches (context) -> AgentResult
 
-# Stop everything
-docker compose down
+def adapt_mcp(tool_name, mcp_registry) -> Callable:
+    # Wraps: mcp_registry.execute(tool_name, context.step_input) -> AgentResult
 
-# Reset databases (removes volumes)
-docker compose down -v
+def adapt_rest() -> Callable:
+    # Stub: returns "REST calls not implemented" AgentResult
+
+def adapt_python() -> Callable:
+    # Stub: returns "Python execution not implemented" AgentResult
 ```
 
 ---
 
-## 7. Configuration
+## 6. MCP Tool System — Pin-to-Pin
 
-### 7.1 Environment Variables
+### 6.1 Registration Flow
 
-| Variable | Default | Service | Purpose |
-|----------|---------|---------|---------|
-| `SECRET_KEY` | dev-secret-key... | Backend | JWT signing key |
-| `POSTGRES_PASSWORD` | postgres | Postgres | DB password |
-| `REDIS_PASSWORD` | (empty) | Redis | Redis password |
-| `DATABASE_URL` | postgresql+asyncpg://... | Backend | DB connection string |
-| `REDIS_URL` | redis://localhost:6379/0 | Backend | Redis connection string |
-| `OLLAMA_BASE_URL` | http://localhost:11434 | Backend | Ollama endpoint |
-| `OLLAMA_MODEL` | llama3.2 | Backend | Model for generation |
-| `EMBEDDING_MODEL` | nomic-embed-text | Backend | Model for embeddings |
-| `LLM_PROVIDER` | ollama | Backend | `ollama` or `openai` |
-| `OPENAI_API_KEY` | (empty) | Backend | OpenAI key (if provider=openai) |
-| `VITE_API_URL` | /api/v1 | Frontend | API base URL (relative via nginx proxy) |
+```
+app.main.py (line 13): import app.mcp.github
+        │
+        ▼
+backend/app/mcp/github.py (module-level code runs on import):
+    registry = get_registry()          # Global ToolRegistry singleton
+    gh_mcp = GitHubMCP(registry)        # Registers 3 tools
+        registry.register("clone_repository", schema, handler)
+        registry.register("create_branch", schema, handler)
+        registry.register("create_pull_request", schema, handler)
 
-### 7.2 Python Dependencies
+Same pattern for:
+  backend/app/mcp/filesystem.py (4 tools)
+  backend/app/mcp/docker.py (4 tools)
+  backend/app/mcp/aws.py (4 tools)
+```
 
-Key packages: fastapi, uvicorn, sqlalchemy 2.0, asyncpg, pgvector, redis, httpx, python-jose, passlib[argon2], structlog, pdfplumber, markdown, langgraph, langchain, langchain-ollama, langchain-openai, prometheus-client
+### 6.2 ToolRegistry (`backend/app/mcp/registry.py`)
 
-### 7.3 Frontend Dependencies
+```python
+class ToolRegistry:
+    _tools: Dict[str, ToolDefinition]     # name → metadata + schema
+    _handlers: Dict[str, Callable]        # name → async handler
 
-React 18, react-router-dom 6, lucide-react, tailwindcss 3, vite 5, typescript 5
+    def register(name, description, input_schema, handler):
+        # Stores in both dicts
+
+    def execute(name, args) -> Dict:
+        # Looks up handler, calls handler(args)
+
+    def list_tools() -> List[Dict]:
+        # Returns all tool metadata
+```
+
+### 6.3 All 15 Registered Tools
+
+| Tool | Adapter File | Implementation |
+|------|-------------|----------------|
+| `clone_repository` | `mcp/github.py:74` | `git clone --depth 1 --branch <b> --single-branch <url> <dir>` |
+| `create_branch` | `mcp/github.py:85` | `git checkout -b <branch> <base>` |
+| `create_pull_request` | `mcp/github.py:98` | Placeholder — returns dict, no GitHub API call |
+| `read_file` | `mcp/filesystem.py:42` | Opens file, reads content |
+| `write_file` | `mcp/filesystem.py:54` | Writes content to file |
+| `search_files` | `mcp/filesystem.py:66` | Glob search in directory |
+| `list_directory` | `mcp/filesystem.py:83` | Lists directory contents |
+| `build_image` | `mcp/docker.py:49` | `docker build -t <tag> <path>` |
+| `run_container` | `mcp/docker.py:62` | `docker run -d --name <name> <image>` |
+| `stop_container` | `mcp/docker.py:79` | `docker stop <container>` |
+| `get_logs` | `mcp/docker.py:91` | `docker logs <container>` |
+| `s3_list_buckets` | `mcp/aws.py:77` | `aws s3api list-buckets` |
+| `s3_upload_file` | `mcp/aws.py:90` | `aws s3 cp <local> s3://<bucket>/<key>` |
+| `ec2_list_instances` | `mcp/aws.py:103` | `aws ec2 describe-instances` |
+| `cloudwatch_get_metrics` | `mcp/aws.py:116` | `aws cloudwatch get-metric-statistics` |
+
+All MCP tools use `subprocess.run()` to call CLI binaries (git, docker, aws). No SDK integrations.
+
+### 6.4 Dispatch Paths
+
+**Path A — Direct API**: `POST /api/v1/tools/{name}/execute` → `tools.py` → `registry.execute(name, args)` → handler
+
+**Path B — Via WorkflowEngine**: Planner step with capability matching MCP tool name → `CapabilityRegistry.resolve()` → `adapt_mcp()` wrapper → `mcp_registry.execute(name, args)` → handler
 
 ---
 
-## 8. Security
+## 7. AIOps — Alert Pipeline (Pin-to-Pin)
 
-- **JWT Auth**: Access token (30 min) + refresh token (7 days)
-- **Password Hashing**: Argon2 via passlib
-- **API Keys**: Hashed storage, prefix-based identification
-- **CORS**: Configurable origins, default allows dev ports
-- **Non-root user**: Backend and frontend run as non-root in containers
-- **HITL Approval**: Destructive/deploy actions require manual approval via web UI
+### 7.1 Architecture
+
+```
+Prometheus Alertmanager
+    │
+    │ HTTP POST /api/v1/alerts/webhook
+    │ Payload: AlertmanagerWebhook JSON
+    ▼
+┌──────────────────────────────────────────────┐
+│ alert_webhook()                               │
+│ backend/app/api/v1/endpoints/alerts.py:102    │
+│                                               │
+│ 1. record_request() — increment Prometheus    │
+│    http_requests_total counter                │
+│                                               │
+│ 2. Embed alert body via EmbeddingService      │
+│    → POST host.docker.internal:11434/api/     │
+│        embeddings (nomic-embed-text)           │
+│                                               │
+│ 3. Store in SemanticMemory:                   │
+│    text = "Alert: <summary>\n<description>"   │
+│    metadata = {                               │
+│      type: "alert",                           │
+│      status: "firing"|"resolved",             │
+│      alert_names: [...],                      │
+│      processing: "pending"                    │
+│    }                                          │
+│                                               │
+│ 4. asyncio.create_task(                       │
+│      _process_alert_background(...))          │
+│    → Returns immediately                      │
+└──────────────────────┬───────────────────────┘
+                       │
+                       │ (fire-and-forget)
+                       ▼
+┌──────────────────────────────────────────────┐
+│ _process_alert_background()                   │
+│ backend/app/api/v1/endpoints/alerts.py:43     │
+│                                               │
+│ 1. LLMService.generate()                      │
+│    System: "Senior SRE analyzing Prometheus   │
+│             alert — return valid JSON"        │
+│    Timeout: 120s                              │
+│                                               │
+│ 2. _extract_json() — handles markdown-wrapped │
+│    JSON (```json ... ```) and raw {...}       │
+│                                               │
+│ 3. Parse: root_cause, impact, severity,       │
+│    remediation_steps, prevention, confidence  │
+│                                               │
+│ 4. Open NEW DB session (async_session_maker)  │
+│    → EmbedService → MemorySystem              │
+│                                               │
+│ 5. Store analysis in SemanticMemory:          │
+│    text = "Alert Analysis: <root_cause>"      │
+│    metadata = {                               │
+│      type: "alert_analysis",                  │
+│      severity: "critical"|"high"|"medium"|"low"│
+│      root_cause: "...",                       │
+│      confidence: 0.0-1.0,                     │
+│      has_remediation: true/false              │
+│    }                                          │
+└──────────────────────────────────────────────┘
+```
+
+### 7.2 Alert Data Flow
+
+```
+SemanticMemory stores BOTH raw alerts and analyses:
+
+Entry 1 (type: "alert"):
+  text: "Alert: CPU > 95% on prod-web-01\nCPU usage at 97% for 10 min"
+  metadata: { type: "alert", status: "firing", alert_names: ["HighCPU"], processing: "pending" }
+
+Entry 2 (type: "alert_analysis"):
+  text: "Alert Analysis: High CPU on prod-web-01"
+  metadata: {
+    type: "alert_analysis",
+    severity: "critical",
+    root_cause: "Memory leak in payment-service",
+    confidence: 0.85,
+    has_remediation: true,
+    alert_summary: "CPU > 95% on prod-web-01"
+  }
+```
+
+### 7.3 Endpoints
+
+| Endpoint | What it does | Code |
+|----------|-------------|------|
+| `POST /alerts/webhook` | Receives Alertmanager payload → stores alert → fires background LLM analysis | `endpoints/alerts.py:102` |
+| `GET /alerts/history?limit=N` | `search_semantic("alert notification incident", limit, threshold=0.0)` — returns all alert + analysis entries | `endpoints/alerts.py:166` |
+| `GET /alerts/stats` | Counts firing vs resolved entries from semantic memory | `endpoints/alerts.py:180` |
+
+### 7.4 Background Task Isolation
+
+```python
+async def _process_alert_background(alert_body, incident_summary, description):
+    # Uses LLMService singleton (no Depends needed)
+    llm = LLMService()
+    raw = await asyncio.wait_for(llm.generate(system_prompt, alert_body), timeout=120.0)
+    parsed = json.loads(_extract_json(raw))
+
+    # Opens fresh DB session (not request-scoped)
+    async with async_session_maker() as db:
+        embeddings = EmbeddingService(db)
+        memory = MemorySystem(db, embeddings)
+        emb = (await embeddings.generate_embeddings([analysis_text]))[0]
+        await memory.store_semantic(text=..., embedding=emb, metadata=...)
+```
+
+### 7.5 Alertmanager Webhook Payload Format
+
+```json
+{
+  "status": "firing",
+  "alerts": [{
+    "status": "firing",
+    "labels": { "alertname": "HighCPU", "severity": "critical" },
+    "annotations": { "summary": "CPU > 95%", "description": "CPU at 97%" },
+    "startsAt": "2026-07-06T12:00:00Z"
+  }],
+  "commonLabels": { "severity": "critical" },
+  "commonAnnotations": { "summary": "CPU > 95% on prod-web-01" }
+}
+```
 
 ---
 
-## 9. Key Architectural Decisions
+## 8. Prometheus & Observability — Pin-to-Pin
+
+### 8.1 Prometheus Scrape Pipeline
+
+```
+Prometheus container (prom/prometheus:latest, port 9090)
+    │
+    │ Scrape config (infra/prometheus.yml):
+    │   job_name: 'aegis-backend'
+    │   metrics_path: /api/v1/observability/metrics
+    │   targets: ['backend:8000']   (Docker network DNS)
+    │   scrape_interval: 15s
+    │
+    ▼ Every 15s
+GET http://backend:8000/api/v1/observability/metrics
+    │
+    ▼
+backend/app/api/v1/endpoints/observability.py:23
+    @router.get("/metrics", response_class=PlainTextResponse)
+    async def get_metrics(service = Depends(get_observability_service)):
+        metrics = await service.get_metrics()
+        return PlainTextResponse(metrics, media_type="text/plain; version=0.0.4")
+    │
+    ▼
+backend/app/services/observability.py:32
+    async def get_metrics(self) -> str:
+        return generate_latest(REGISTRY).decode("utf-8")
+    │
+    ▼
+prometheus_client serializes all registered metrics:
+    - http_requests_total{method, endpoint, status}
+    - http_request_duration_seconds_bucket{method, endpoint, le}
+    - active_runs  (synced from DB on each dashboard call)
+    - total_errors{type}  (always 0 — never written)
+    - Python default process metrics (cpu, memory, gc)
+```
+
+### 8.2 Prometheus Metrics Defined
+
+```python
+# backend/app/services/observability.py:15-18
+http_requests_total = Counter("http_requests_total", ..., ["method", "endpoint", "status"])
+http_request_duration_seconds = Histogram("http_request_duration_seconds", ..., ["method", "endpoint"])
+active_runs = Gauge("active_runs", "Currently active agent runs")
+total_errors = Counter("total_errors", "Total errors", ["type"])
+```
+
+### 8.3 What Populates Each Metric
+
+| Metric | Where Written | Value |
+|--------|---------------|-------|
+| `http_requests_total` | `observability.py:27` — `record_request()` | Incremented on: webhook POST, manual /record endpoint |
+| `http_request_duration_seconds` | `observability.py:30` — `record_request()` | Observed on same calls |
+| `active_runs` | `observability.py:92` — `get_dashboard_data()` | Set to COUNT of `status='running'` in agent_runs table |
+| `total_errors` | Never written | Always 0 |
+
+**Important**: There is NO automatic middleware that captures all HTTP requests. `record_request()` is called explicitly from:
+1. `endpoints/alerts.py:126` — on every webhook call  
+2. `endpoints/observability.py:50` — the manual `/record` endpoint
+
+### 8.4 ObservabilityService (`backend/app/services/observability.py:21`)
+
+```python
+class ObservabilityService:
+    async def record_request(method, endpoint, status, duration_ms):
+        # Increments Counter, observes Histogram
+
+    async def get_metrics() -> str:
+        # generate_latest(REGISTRY) — all Prometheus metrics serialized
+
+    async def get_tracing(run_id=None, limit=50) -> list:
+        # SELECT * FROM agent_steps ORDER BY created_at DESC LIMIT N
+        # Returns step_id, run_id, step_type, name, status, duration_ms, created_at
+
+    async def get_dashboard_data() -> Dict:
+        # SQL aggregate queries on agent_runs:
+        #   total_runs, completed, failed, running (COUNT with CASE)
+        #   agent_counts (GROUP BY agent_type)
+        # Also: active_runs.set(running_count)  # Sync Prometheus gauge
+```
+
+### 8.5 Tracing Data
+
+Written by `WorkflowEngine.execute_plan()` at `backend/app/services/workflow_engine.py:211-239`:
+
+```python
+# Start of step
+step_record = AgentStep(run_id=..., step_index=..., step_type=..., name=..., status="running")
+self.db.add(step_record)
+await self.db.commit()
+
+# Execute
+result = await runtime.execute_step(step, capability.executor, context)
+
+# End of step
+step_record.status = result.status          # "completed" | "failed"
+step_record.duration_ms = result.duration_ms
+step_record.output_data = {"result": ...}   # or {"error": ...}
+step_record.completed_at = datetime.utcnow()
+await self.db.commit()
+```
+
+### 8.6 Dashboard Aggregation
+
+```
+GET /api/v1/observability/dashboard
+    │
+    ▼
+SQL:
+  SELECT
+    COUNT(*) as total_runs,
+    COUNT(CASE WHEN status='completed' THEN 1 END) as completed,
+    COUNT(CASE WHEN status='failed' THEN 1 END) as failed,
+    COUNT(CASE WHEN status='running' THEN 1 END) as running
+  FROM agent_runs
+
+  SELECT agent_type, COUNT(*) as count
+  FROM agent_runs GROUP BY agent_type
+    │
+    ▼
+Returns HTTP 200 JSON:
+  { total_runs: N, completed: N, failed: N, running: N, agent_counts: { "planner": 2 } }
+```
+
+### 8.7 Docker Compose Config
+
+```yaml
+# docker-compose.yml:49-59
+prometheus:
+  image: prom/prometheus:latest
+  container_name: aegis-prometheus
+  volumes:
+    - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml
+  ports:
+    - "${PROMETHEUS_PORT:-9090}:9090"
+  depends_on:
+    - backend
+```
+
+```yaml
+# infra/prometheus.yml
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: 'aegis-backend'
+    metrics_path: /api/v1/observability/metrics
+    static_configs:
+      - targets: ['backend:8000']
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+```
+
+---
+
+## 9. Frontend (React + Vite + Tailwind)
+
+### 9.1 Tech Stack
+- React 18, TypeScript 5.5 — compiled by `tsc -b`
+- Vite 5.4 (build tool), React Router 6.26 (client-side routing)
+- Tailwind CSS 3.4 (utility-first), Lucide React (icons)
+- shadcn/ui component system (tailwind-merge + clsx class management)
+
+### 9.2 Build Process
+
+```
+Dockerfile (frontend/Dockerfile):
+  1. node:20-alpine — npm install (243 packages)
+  2. npm run build → tsc -b + vite build
+  3. Output: dist/ (index.html + assets/)
+  4. nginx:1.27-alpine — serves dist/ from /usr/share/nginx/html
+```
+
+### 9.3 Page Routes (11 pages)
+
+| Path | Component | Auth | API Calls on Mount |
+|------|-----------|------|-------------------|
+| `/login` | `pages/Login.tsx` | No | `authApi.login()` on submit |
+| `/register` | `pages/Register.tsx` | No | `authApi.register()` on submit |
+| `/dashboard` | `pages/Dashboard.tsx` | Yes | Projects, repositories, document counts |
+| `/projects` | `pages/Projects.tsx` | Yes | `projectsApi.list()` |
+| `/repositories` | `pages/Repositories.tsx` | Yes | `repositoriesApi.list()` |
+| `/knowledge` | `pages/Knowledge.tsx` | Yes | Documents list, chunk viewer |
+| `/agents` | `pages/Agents.tsx` | Yes | Agent cards — fires POST to agent endpoints |
+| `/chat` | `pages/Chat.tsx` | Yes | `plannerApi.route()` — sends message, streams response |
+| `/approvals` | `pages/ApprovalQueue.tsx` | Yes | Pending approvals list + approve/reject actions |
+| `/ops` | `pages/OpsDashboard.tsx` | Yes | Dashboard + tracing + alert stats + alert history — polls every 15s |
+| `/settings` | `pages/Settings.tsx` | Yes | Profile, password, API keys |
+
+### 9.4 API Client (`frontend/src/lib/api.ts`)
+
+Typed fetch wrapper with these features:
+- JWT Bearer token from `localStorage`
+- Auto 401 → refresh token endpoint → retry original request
+- Token persistence across sessions
+- 13 typed API objects:
+
+| Client | Methods |
+|--------|---------|
+| `authApi` | login, register, refresh, me, updateProfile, changePassword, listApiKeys, createApiKey, deleteApiKey |
+| `projectsApi` | create, list, get, update, delete |
+| `repositoriesApi` | create, list, get, ingest, listFiles, delete |
+| `documentsApi` | create, list, get, getChunks, delete |
+| `embeddingsApi` | generateDocumentEmbeddings, generateRepoEmbeddings, search, hybridSearch |
+| `plannerApi` | plan, route, resume, getRun, getRunSteps |
+| `memoryApi` | shortTermStore, shortTermGet, longTermStore, longTermGet, semanticStore, semanticSearch, conversationStore, conversationGet, conversationClear |
+| `alertsApi` | stats, history |
+| `repoAgentApi` | understand, summary |
+| `knowledgeAgentApi` | search, hybrid |
+| `incidentAgentApi` | analyze, rootCause, recommendations |
+| `docAgentApi` | readme, api, architecture |
+| `codeReviewApi` | prReview, security, bestPractices |
+
+### 9.5 OpsDashboard (`frontend/src/pages/OpsDashboard.tsx`)
+
+The AIOps observability page. On mount and every 15s:
+
+```typescript
+const [dashRes, traceRes, alertRes, alertHistoryRes] = await Promise.all([
+  fetch('/api/v1/observability/dashboard'),        // Agent run stats
+  fetch('/api/v1/observability/tracing?limit=20'),  // Latest steps
+  alertsApi.stats(),                                 // Alert counts
+  alertsApi.history(20),                             // Recent alerts + analyses
+])
+```
+
+**Renders 6 sections:**
+1. **Stats Cards** (6) — Total Runs, Success Rate %, Failed, Active Runs, Alerts (Firing), Total Alerts
+2. **Agent Run Breakdown** — Horizontal bar chart per agent type
+3. **Alert Status** — Firing count (red) + Resolved count (green) + Failure rate
+4. **Alert Feed** — Two renderers:
+   - Raw alerts (`type:"alert"`) — alert name, status badge (firing=red, resolved=green), timestamp
+   - Analysis entries (`type:"alert_analysis"`) — severity badge, root cause text, confidence %, remediation indicator
+5. **Execution Traces** — Table: Step Name, Type badge, Status pill (completed=green, failed=red, running=blue), Duration (s), Time
+6. **Prometheus Link** — External link to `/api/v1/observability/metrics`
+
+### 9.6 Nginx Config (`frontend/nginx.conf`)
+
+```nginx
+server {
+    listen 80;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # SPA fallback — serve index.html for all non-file routes
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Proxy API requests to backend
+    location /api/v1/ {
+        proxy_pass http://backend:8000/api/v1/;
+        proxy_read_timeout 300s;    # LLM calls can take 2-3 min
+        proxy_connect_timeout 60s;
+    }
+
+    # Gzip
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+}
+```
+
+---
+
+## 10. Memory System — Three-Tier
+
+### 10.1 Tier Definitions
+
+| Tier | Table | File | TTL | Written By |
+|------|-------|------|-----|------------|
+| **Short-term** | `agent_steps` | `models/agent.py:29` | Per-run | `WorkflowEngine.execute_plan()` — per step |
+| **Long-term** | `long_term_memory` | `models/memory.py` | Configurable (default 30d) | `MemorySystem.store_long_term()` — any agent |
+| **Semantic** | `semantic_memory` | `models/memory.py:27` | Forever | Alerts webhook, planner, knowledge agent |
+
+### 10.2 MemorySystem (`backend/app/services/memory.py:16`)
+
+```python
+class MemorySystem:
+    async def store_short_term(run_id, key, value)
+        # AgentStep with name="memory:<key>"
+    async def get_short_term(run_id, key)
+        # SELECT FROM agent_steps WHERE name="memory:<key>" ORDER BY created_at DESC
+
+    async def store_long_term(user_id, key, value, ttl_days=30)
+        # LongTermMemory with expires_at = now + ttl_days
+    async def get_long_term(user_id, key)
+        # SELECT WHERE key=key AND expires_at > now()
+
+    async def store_semantic(text, embedding, metadata=None)
+        # SemanticMemory(text, embedding, doc_metadata)
+    async def search_semantic(query, limit=5, threshold=0.5)
+        # Embed query → pgvector cosine similarity search
+    async def list_semantic(limit=50)
+        # SELECT ORDER BY created_at DESC
+```
+
+### 10.3 Integration Points
+
+| Integration | Where | What Happens |
+|-------------|-------|--------------|
+| **PlannerAgent** | `planner.py:135-145` | Before planning: searches semantic memory for similar tasks → injects as context. After completion: stores task+plan as new semantic memory entry |
+| **KnowledgeAgent** | `knowledge_agent.py` | `query()` method: searches semantic memory for past Q&A → injects into prompt. Stores new Q&A after generation |
+| **Alert Webhook** | `alerts.py:148-167` | Stores raw alert in semantic memory, fires background LLM analysis which stores a second `alert_analysis` entry |
+| **DeployAgent** | (declared, not yet wired) | Can store/retrieve deployment analysis results |
+
+---
+
+## 11. Docker Deployment
+
+### 11.1 Services
+
+```yaml
+# docker-compose.yml
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports: ["5432:5432"]
+    healthcheck: { test: pg_isready }
+    volumes: [postgres_data:/var/lib/postgresql/data]
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck: { test: redis-cli ping }
+
+  backend:
+    build: ./backend
+    ports: ["8000:8000"]
+    depends_on: [postgres, redis]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/aegis
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    healthcheck: { test: curl -f http://localhost:8000/api/v1/health }
+
+  frontend:
+    build: ./frontend
+    ports: ["80:80"]
+    depends_on: [backend]
+    healthcheck: { test: curl -f http://localhost:80 }
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports: ["9090:9090"]
+    volumes: [./infra/prometheus.yml:/etc/prometheus/prometheus.yml]
+    depends_on: [backend]
+```
+
+### 11.2 Key Fixes Applied
+
+| Issue | Fix | File |
+|-------|-----|------|
+| `git` not in backend container | Added to apt-get install in Dockerfile | `backend/Dockerfile` |
+| Postgres `InterfaceError: connection is closed` | `pool_pre_ping=True, pool_recycle=3600` | `db/session.py:10-11` |
+| nginx 504 timeout on slow LLM calls | `proxy_read_timeout 300s` | `frontend/nginx.conf` |
+| Prometheus scrape content-type wrong | `media_type="text/plain; version=0.0.4"` | `endpoints/observability.py:30` |
+| Dashboard asyncpg Row compatibility | `dict(stats._mapping)`, `a.agent_type/a.count` | `services/observability.py:72-85` |
+
+---
+
+## 12. Key Architectural Decisions
 
 | Decision | Rationale |
 |----------|-----------|
 | **Planner/WorkflowEngine split** | Planner reasons and produces ExecutionPlan; WorkflowEngine orchestrates only. Clear separation of concerns. |
-| **DAG execution via topological sort** | Independent steps run in parallel. Kahn's algorithm. |
+| **DAG execution via topological sort** | Independent steps can run in parallel. Kahn's algorithm. |
 | **CapabilityRegistry as single dispatch point** | No separate executor layer. Adapters normalize all execution types (agent, MCP, REST, Python) at registration time. |
-| **No global singleton** | CapabilityRegistry populated per-request in factory function. |
+| **No global CapabilityRegistry singleton** | Populated per-request in factory function. |
 | **Ollama on host** | Avoid GPU passthrough complexity. Container connects via host.docker.internal. |
 | **step_input in ProjectContext** | Only difference between agent and MCP dispatch — MCP tools need step-specific params. |
-| **Plain-text prompts + JSON parsing** | Keeps LLM calls simple. No structured output formats. |
-| **pgvector for embeddings** | Native PostgreSQL extension — no vector DB lock-in. |
+| **Plain-text prompts + JSON parsing + fallback** | Keeps LLM calls simple. `_extract_json()` handles markdown-wrapped output. |
+| **pgvector for embeddings** | Native PostgreSQL extension — no vector DB lock-in. No external service dependency. |
 | **structlog for logging** | Structured JSON logs for production observability. |
-| **Prometheus metrics** | Counter (requests), Histogram (latency), Gauge (active runs) built into every endpoint. |
+| **Prometheus metrics + DB aggregates** | Metrics for counters/latency (prometheus_client), dashboard data from SQL (runs, steps). |
+| **Alert background task isolation** | Opens fresh DB session via `async_session_maker` — avoids request-scoped dependency lifetime issues. |
+| **120s LLM timeout** | llama3.2 on 3.5 GiB RAM takes 30-60s for analysis. |
+| **MCP no special treatment** | All 15 MCP tools registered as capabilities in same CapabilityRegistry as agents. No separate dispatch path. |
+| **EngineeringContext composition** | Root aggregate with 8 bounded sub-contexts. `dataclasses.replace()` for per-step cloning. |
 
 ---
 
-## 10. CI/CD (`.github/workflows/`)
+## 13. Project Files
 
-| Workflow | Purpose |
-|----------|---------|
-| `ci.yml` | Run on push — lint, type-check, test |
-| `deploy.yml` | CD pipeline — build images, push to registry, deploy to server |
-
----
-
-## 11. Project History (task progression)
-
-| File | Status | Content |
-|------|--------|---------|
-| `task.md` | ✅ Complete | Original project spec |
-| `task_v1.md` | ✅ Complete | V1 milestones |
-| `task_v2.md` | ✅ Complete (7 milestones) | Planner-centric migration |
-| `task_v3.md` | ✅ M1 complete | Generic adapter architecture (CapabilityRegistry evolution) |
-| `AGENTS.md` | ✅ Current | Agent architecture reference |
-
-### Milestones Achieved (task_v2.md)
-1. **M1** — ExecutionPlan dataclasses + CapabilityRegistry + PlanValidator
-2. **M2** — ExecutionRuntime (retries, timeout, cancellation, telemetry)
-3. **M3** — WorkflowEngine consumes ExecutionPlan via topological sort
-4. **M4** — IntentRouter returns ExecutionPlan; PlannerAgent.plan() no side effects
-5. **M5** — HITL persistence + approval endpoints + resume flow
-6. **M6** — Chat routing fix + repo agent fix + frontend fixes
-7. **M7** — Cleanup: config constants, logging, 17 unused endpoints removed
-
-### Milestones Achieved (task_v3.md)
-1. **M1** — Generic adapter architecture: execution_adapters.py, CapabilityRegistry extended, MCP tools wired via adapters, step_input in ProjectContext
+| File | Purpose |
+|------|---------|
+| `AGENTS.md` | Agent architecture reference — agent definitions, MCP tool system, memory tiers, LLM integration, adding new agents |
+| `ABOUT.md` | This file — full application overview |
+| `task.md` | ✅ Original project spec |
+| `task_v2.md` | ✅ Complete (7 milestones) — Planner-centric migration |
+| `task_v3.md` | ✅ M1 complete — Generic adapter architecture |
+| `TASK.md` | DO NOT MODIFY — original spec |
+| `docker-compose.yml` | Local dev — postgres, redis, backend, frontend, prometheus |
+| `docker-compose.prod.yml` | Production overlay — CORS, secrets, restricted ports |
+| `infra/prometheus.yml` | Prometheus scrape config — targets backend:8000 |
+| `infra/docker-compose.aws.yml` | AWS ECS-ready compose file |
+| `infra/deploy.sh` | Production deployment script |
+| `infra/nginx.prod.conf` | Production Nginx config with SSL |
+| `infra/init-db.sql` | DB init SQL (pgvector, uuid-ossp) |
+| `infra/.env.example` | Environment variable template |
+| `frontend/nginx.conf` | Nginx config for frontend container — SPA fallback + API proxy + 300s timeout |
 
 ---
 
-## 12. Quick Start
+## 14. Quick Start
 
 ```powershell
 # Prerequisites: Docker Desktop + Ollama (with models pulled)
+#   ollama pull llama3.2
+#   ollama pull nomic-embed-text
 
-# 1. Clone and set up
-cd ageis-ai
-
-# 2. Start services
+# 1. Start all services
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 
-# 3. Open browser
-# Local:    http://localhost
-# Remote:   cloudflared tunnel --url http://localhost:80
+# 2. Open browser → http://localhost
+#    Register at /register, create project, add repo, explore agents
 
-# 4. Register an account at /register
-# 5. Create a project, add a repository, explore agents
+# 3. Test alert pipeline (send a Prometheus-style alert)
+$body = @'
+{ "status":"firing", "alerts":[{ "status":"firing",
+  "labels":{"alertname":"HighCPU","severity":"critical"},
+  "annotations":{"summary":"CPU > 95% on prod-web-01","description":"CPU at 97% for 10 min"}}],
+  "commonAnnotations":{"summary":"CPU > 95%"}}
+'@ ; $body | Set-Content "$env:TEMP\alert.json"
+curl.exe -s -X POST http://localhost:8000/api/v1/alerts/webhook -H "Content-Type: application/json" -d "@$env:TEMP\alert.json"
+
+# 4. Check Ops Dashboard at /ops (auto-refreshes every 15s)
+#    Raw alert appears immediately → LLM analysis appears ~60s later
+
+# 5. View Prometheus metrics
+#    http://localhost:9090 (Prometheus UI)
+#    http://localhost:8000/api/v1/observability/metrics (raw text)
+
+# Cloudflare Tunnel for public access
+& "$env:USERPROFILE\cloudflared.exe" tunnel --url http://localhost:80
 ```
