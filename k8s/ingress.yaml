@@ -1,0 +1,38 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aegis
+  namespace: aegis
+  labels:
+    app.kubernetes.io/name: aegis
+    app.kubernetes.io/part-of: aegis-ai
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: aegis.local
+      http:
+        paths:
+          - path: /api/v1/
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+  # Default backend (optional) - redirects to frontend
+  defaultBackend:
+    service:
+      name: frontend
+      port:
+        number: 80

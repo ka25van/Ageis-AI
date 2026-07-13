@@ -14,6 +14,7 @@ import app.mcp.github  # noqa: F401
 import app.mcp.filesystem  # noqa: F401
 import app.mcp.docker  # noqa: F401
 import app.mcp.aws  # noqa: F401
+import app.mcp.kubernetes  # noqa: F401
 
 
 # Setup logging

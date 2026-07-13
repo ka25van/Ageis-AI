@@ -30,7 +30,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     curl \
     git \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl \
+    && chmod +x /usr/local/bin/kubectl \
     && addgroup --system --gid 1001 app \
     && adduser --system --uid 1001 --gid 1001 app
 
@@ -39,6 +42,7 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels aegis-backend \
     && rm -rf /wheels
 
 COPY --chown=app:app app ./app
+COPY --chown=app:app alembic.ini ./
 
 USER app
 

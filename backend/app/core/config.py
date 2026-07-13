@@ -10,6 +10,8 @@ class Settings(BaseSettings):
 
     BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173"]
 
+    # Default: Docker Compose (localhost); override with env vars for K8s
+    # kubectl creates aegis-secrets with DATABASE_URL = postgresql+asyncpg://postgres:<pw>@postgres:5432/aegis
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/aegis"
     REDIS_URL: str = "redis://localhost:6379/0"
 

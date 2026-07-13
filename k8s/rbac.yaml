@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aegis-backend
+  namespace: aegis
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: aegis-ai
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aegis-backend
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: aegis-ai
+rules:
+  # Read operations for Kubernetes MCP tools (k8s_get_pods, k8s_get_logs, k8s_get_events, k8s_describe)
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - pods/status
+      - events
+      - services
+      - nodes
+      - configmaps
+      - secrets
+      - namespaces
+    verbs: ["get", "list", "watch"]
+  # Read operations across workload resources (needed for k8s_rollout_status, k8s_describe)
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - deployments/status
+      - statefulsets
+      - statefulsets/status
+      - replicasets
+      - replicasets/status
+    verbs: ["get", "list", "watch"]
+  # Write operations for Kubernetes MCP tools (k8s_restart, k8s_scale, k8s_rollback)
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # Read-only access to events across cluster
+  - apiGroups: ["events.k8s.io"]
+    resources:
+      - events
+    verbs: ["get", "list", "watch"]
+  # Nodes for k8s_describe
+  - apiGroups: [""]
+    resources:
+      - nodes
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aegis-backend
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: aegis-ai
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aegis-backend
+subjects:
+  - kind: ServiceAccount
+    name: aegis-backend
+    namespace: aegis
